@@ -1,3 +1,3 @@
-package internal
+package DataStructures
 
 type BinaryTree interface{}
