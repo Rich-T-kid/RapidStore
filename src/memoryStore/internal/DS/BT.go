@@ -1,3 +1,3 @@
-package internal
+package DS
 
 type BinaryTree interface{}
