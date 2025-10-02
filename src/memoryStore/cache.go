@@ -48,20 +48,20 @@ type HashTableManager interface {
 	LimitedStorage
 }
 
-// List (ordered) no ttl can be provided
+// List (ordered) no ttl can be provided ; error really only occures if the key doesnt exist
 type ListManager interface {
-	LPush(key string, value any) int // push start
-	RPush(key string, value any) int // push end
-	LPop(key string) (any, bool)     // pop left
-	RPop(key string) (any, bool)     // pop right
-	LRange(key string, start, stop int) []any
-	Size() uint
+	LPush(key string, value any) error // push start;
+	RPush(key string, value any) error // push end;
+	LPop(key string) (any, error)      // pop left; if key doesnt exist
+	RPop(key string) (any, error)      // pop right
+	LRange(key string, start, stop int) ([]any, error)
+	Size(key string) uint
 	LimitedStorage
 }
 
 // Set (unordered, unique)
 type SetManager interface {
-	SAdd(key string, member any) bool      // add element to set
+	SAdd(key string, member any)           // add element to set
 	SMembers(key string) []any             // list of elements
 	SRem(key string, member any) bool      // remove element
 	SIsMember(key string, member any) bool // check membership
@@ -407,27 +407,204 @@ func NewFieldStore(maxSize uint64, policy string) HashTableManager {
 }
 
 type OrderedListStore struct {
-	internalManager DS.SequenceStorage
+	internalManager map[string]DS.SequenceStorage
+	policy          internal.EvictionPolicy
+	maxSize         uint64
 }
 
-func NewOrderedListStore() *OrderedListStore {
+func NewOrderedListStore(maxSize uint64, policy string) *OrderedListStore {
 	return &OrderedListStore{
-		internalManager: DS.NewSequenceStorage(),
+		internalManager: make(map[string]DS.SequenceStorage),
+		policy:          internal.EvictionPolicy(topolicy(policy)),
+		maxSize:         maxSize,
 	}
 }
 
-func (o *OrderedListStore) LPush(key string, value any) int
-func (o *OrderedListStore) RPush(key string, value any) int
-func (o *OrderedListStore) LPop(key string) (any, bool)
-func (o *OrderedListStore) RPop(key string) (any, bool)
-func (o *OrderedListStore) LRange(key string, start, stop int) []any
-func (o *OrderedListStore) Size() uint
-func (o *OrderedListStore) CurrentSize() uint64
-func (o *OrderedListStore) Evict()
-func (o *OrderedListStore) Keys() []string
+func (o *OrderedListStore) LPush(key string, value any) error {
+	if o.Size(key) >= uint(o.maxSize) {
+		return errors.New("list has reached its maximum size")
+	}
+	v, ok := o.internalManager[key]
+	if !ok {
+		t := DS.NewSequenceStorage()
+		t.AddFirst(value)
+		o.internalManager[key] = t
+		return nil
+	}
+	v.AddFirst(value)
+	return nil
+}
+func (o *OrderedListStore) RPush(key string, value any) error {
+	if o.Size(key) >= uint(o.maxSize) {
+		return errors.New("list has reached its maximum size")
+	}
+	v, ok := o.internalManager[key]
+	if !ok {
+		t := DS.NewSequenceStorage()
+		t.AddLast(value)
+		o.internalManager[key] = t
+		return nil
+	}
+	v.AddLast(value)
+	return nil
+}
+func (o *OrderedListStore) LPop(key string) (any, error) {
+	v, ok := o.internalManager[key]
+	if !ok {
+		return nil, errors.New("key does not exist")
+	}
+	size := v.Size()
+	if size <= 0 {
+		return nil, errors.New("list is empty")
+	}
+	nodeVal := v.PopHead().(*DS.Node)
+	return nodeVal.Value, nil
+}
 
-func NewListManager() ListManager {
-	return NewOrderedListStore()
+func (o *OrderedListStore) RPop(key string) (any, error) {
+	v, ok := o.internalManager[key]
+	if !ok {
+		return nil, errors.New("key does not exist")
+	}
+	size := v.Size()
+	if size <= 0 {
+		return nil, errors.New("list is empty")
+	}
+	nodeVal := v.PopTail().(*DS.Node)
+	return nodeVal.Value, nil
+}
+func (o *OrderedListStore) LRange(key string, start, stop int) ([]any, error) {
+	v, ok := o.internalManager[key]
+	if !ok {
+		return nil, errors.New("key does not exist")
+	}
+	size := v.Size()
+	if size <= 0 {
+		return nil, errors.New("list is empty")
+	}
+	if stop == -1 {
+		stop = int(size) - 1
+	}
+	rangeValues := v.Range(start, stop)
+	fmt.Printf("raw range values: %v\n", rangeValues)
+	var res []any
+	for i := range rangeValues {
+		nn := rangeValues[i].(*DS.Node)
+		res = append(res, nn.Value)
+	}
+	return res, nil
+}
+func (o *OrderedListStore) Size(key string) uint {
+	v, ok := o.internalManager[key]
+	if !ok {
+		return 0
+	}
+	return v.Size()
+}
+func (o *OrderedListStore) CurrentSize() uint64 {
+	return uint64(len(o.internalManager))
+}
+func (o *OrderedListStore) Evict() {
+	panic("Do not implement me")
+}
+func (o *OrderedListStore) Keys() []string {
+	var res []string
+	for key := range o.internalManager {
+		res = append(res, key)
+	}
+	return res
+}
+
+func NewListManager(size uint64) ListManager {
+	return NewOrderedListStore(size, "no eviction")
+}
+
+type UniqueSetStore struct {
+	internalManager map[string]map[interface{}]struct{}
+	policy          internal.EvictionPolicy
+	maxSize         uint64
+}
+
+func NewUniqueSetStore(maxSize uint64, policy string) *UniqueSetStore {
+	return &UniqueSetStore{
+		internalManager: make(map[string]map[interface{}]struct{}),
+		policy:          internal.EvictionPolicy(topolicy(policy)),
+		maxSize:         maxSize,
+	}
+}
+
+func (u *UniqueSetStore) SAdd(key string, member any) {
+	if uint(u.CurrentSize()) >= uint(u.maxSize) {
+		u.Evict()
+	}
+	if _, ok := u.internalManager[key]; !ok {
+		u.internalManager[key] = make(map[interface{}]struct{})
+	}
+	u.internalManager[key][member] = struct{}{}
+}
+func (u *UniqueSetStore) SMembers(key string) []any {
+	if _, ok := u.internalManager[key]; !ok {
+		return nil
+	}
+	var res []any
+	for member := range u.internalManager[key] {
+		res = append(res, member)
+	}
+	return res
+}
+func (u *UniqueSetStore) SRem(key string, member any) bool {
+	if _, ok := u.internalManager[key]; !ok {
+		return false
+	}
+	if _, exists := u.internalManager[key][member]; !exists {
+		return false
+	}
+	delete(u.internalManager[key], member)
+	return true
+}
+func (u *UniqueSetStore) SIsMember(key string, member any) bool {
+	if _, ok := u.internalManager[key]; !ok {
+		return false
+	}
+	_, exists := u.internalManager[key][member]
+	return exists
+}
+func (u *UniqueSetStore) SCard(key string) uint {
+	return uint(len(u.internalManager[key]))
+}
+func (u *UniqueSetStore) CurrentSize() uint64 { return uint64(len(u.internalManager)) }
+func (u *UniqueSetStore) Evict() {
+	switch u.policy {
+	case internal.NoEviction:
+		// Do nothing, new values aren't saved when memory limit is reached
+	case internal.LRU:
+		// Implement LRU eviction logic here
+	case internal.LFU:
+		// Implement LFU eviction logic here
+	case internal.RANDOM:
+		// Implement RANDOM eviction logic here
+	case internal.VolatileLRU:
+		// Implement Volatile LRU eviction logic here
+	case internal.VolatileLFU:
+		// Implement Volatile LFU eviction logic here
+	case internal.VolatileRandom:
+		// Implement Volatile RANDOM eviction logic here
+	case internal.VolatileTTL:
+		// Implement Volatile TTL eviction logic here
+	default:
+		panic("unknown eviction policy")
+		// Unknown policy, handle error or default behavior
+	}
+}
+func (u *UniqueSetStore) Keys() []string { // list all keys in the store
+	var res []string
+	for key := range u.internalManager {
+		res = append(res, key)
+	}
+	return res
+}
+func NewSetManager(size uint64, policy string) SetManager {
+	return NewUniqueSetStore(size, policy)
 }
 
 func topolicy(s string) int {

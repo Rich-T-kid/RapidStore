@@ -1,3 +1,3 @@
-package DataStructures
+package DS
 
 type BinaryTree interface{}
