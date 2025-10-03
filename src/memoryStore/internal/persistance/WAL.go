@@ -33,3 +33,5 @@ type WriteAheadLog struct {
 	lock                sync.RWMutex
 	// other fields as necessary
 }
+
+// -> $<length>\r\n<data>\r\n

@@ -70,10 +70,11 @@ type SetManager interface {
 	LimitedStorage
 }
 
-// Sorted Set (ordered, unique with score)
+// Sorted Set (ordered, unique with score) || overwrite duplicates
 // each member is unique & associated with a score, stored and ordered by score
 type SortedSetManager interface {
 	ZAdd(key string, score float64, member any) bool              // add member
+	ZRemove(key string, member any) bool                          // remove member
 	ZRange(key string, start, stop int, withScores bool) []any    // members ordred by score (lowest -> highest)
 	ZRevRange(key string, start, stop int, withScores bool) []any // same as Zrange but in reverse (highest -> lowest)
 	ZRank(key string, member any) (int, bool)                     // rank of member (ascending)  -> low score first

@@ -2,7 +2,10 @@ module RapidStore
 
 go 1.25.0
 
-require github.com/shirou/gopsutil v3.21.11+incompatible
+require (
+	github.com/shirou/gopsutil v3.21.11+incompatible
+	golang.org/x/exp v0.0.0-20251002181428-27f1f14c8bb9
+)
 
 require (
 	github.com/go-ole/go-ole v1.2.6 // indirect

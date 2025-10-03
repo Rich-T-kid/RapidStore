@@ -138,3 +138,28 @@ func (l *LazyList) Range(start, end int) []interface{} {
 func NewSequenceStorage() SequenceStorage {
 	return NewLazyList()
 }
+
+type Queue[T comparable] []T // A slice of any type
+
+// Enqueue adds an element to the end of the queue.
+func (q *Queue[T]) Enqueue(item T) {
+	*q = append(*q, item)
+}
+
+// Dequeue removes and returns the element from the front of the queue.
+// It returns nil and false if the queue is empty.
+func (q *Queue[T]) Dequeue() (T, bool) {
+	item := (*q)[0]
+	*q = (*q)[1:] // Create a new slice without the first element
+	return item, true
+}
+
+// IsEmpty checks if the queue is empty.
+func (q *Queue[T]) IsEmpty() bool {
+	return len(*q) == 0
+}
+
+// Size returns the number of elements in the queue.
+func (q *Queue[T]) Size() int {
+	return len(*q)
+}
