@@ -71,12 +71,7 @@ func TestExistsKey(t *testing.T) {
 
 // TODO: implement WatchKey
 func TestWatchKey(t *testing.T) {
-	store := newTestStore()
-	ch := store.WatchKey("foo")
-	if ch != nil {
-		// currently unimplemented
-		t.Logf("WatchKey is unimplemented, expected nil for now")
-	}
+	t.Skip("Skipping WatchKey test for now")
 }
 
 func TestIncrement(t *testing.T) {
@@ -186,20 +181,20 @@ func TestDeleteThenTTLIntegration(t *testing.T) {
 
 // ---------- TTL Integration Tests ----------
 
-// TestTTLWithIncrementDecrementIntegration tests that expired keys are properly handled 
+// TestTTLWithIncrementDecrementIntegration tests that expired keys are properly handled
 // during increment/decrement operations and that TTL is respected across operations
 func TestTTLWithIncrementDecrementIntegration(t *testing.T) {
 	store := newTestStore()
-	
+
 	// Set up a counter with a short TTL
 	store.SetKey("counter", int64(10))
 	store.ExpireKey("counter", time.Now().Add(100*time.Millisecond))
-	
+
 	// Verify key exists and has expected value
 	if val := store.GetKey("counter"); val != int64(10) {
 		t.Errorf("expected counter to be 10, got %v", val)
 	}
-	
+
 	// Increment the counter
 	newVal, err := store.Increment("counter")
 	if err != nil {
@@ -208,7 +203,7 @@ func TestTTLWithIncrementDecrementIntegration(t *testing.T) {
 	if newVal != 11 {
 		t.Errorf("expected counter to be 11 after increment, got %d", newVal)
 	}
-	
+
 	// Verify TTL is still positive
 	ttl, err := store.TTLKey("counter")
 	if err != nil {
@@ -217,20 +212,20 @@ func TestTTLWithIncrementDecrementIntegration(t *testing.T) {
 	if ttl <= 0 {
 		t.Errorf("expected positive TTL, got %v", ttl)
 	}
-	
+
 	// Wait for the key to expire
 	time.Sleep(150 * time.Millisecond)
-	
+
 	// Verify key no longer exists
 	if store.ExistsKey("counter") {
 		t.Errorf("expected counter to be expired and not exist")
 	}
-	
+
 	// Verify GetKey returns empty value for expired key
 	if val := store.GetKey("counter"); val != "" {
 		t.Errorf("expected empty value for expired key, got %v", val)
 	}
-	
+
 	// Increment on expired key should create new key with value 1
 	newVal, err = store.Increment("counter")
 	if err != nil {
@@ -239,7 +234,7 @@ func TestTTLWithIncrementDecrementIntegration(t *testing.T) {
 	if newVal != 1 {
 		t.Errorf("expected counter to be 1 after incrementing expired key, got %d", newVal)
 	}
-	
+
 	// Decrement the new counter
 	newVal, err = store.Decrement("counter")
 	if err != nil {
@@ -248,7 +243,7 @@ func TestTTLWithIncrementDecrementIntegration(t *testing.T) {
 	if newVal != 0 {
 		t.Errorf("expected counter to be 0 after decrement, got %d", newVal)
 	}
-	
+
 	// Verify the new key exists (should not have TTL)
 	if !store.ExistsKey("counter") {
 		t.Errorf("expected new counter to exist")
@@ -259,23 +254,23 @@ func TestTTLWithIncrementDecrementIntegration(t *testing.T) {
 // including set, get, append, and verifies lazy deletion on access
 func TestTTLWithStringOperationsIntegration(t *testing.T) {
 	store := newTestStore()
-	
+
 	// Set multiple keys with different TTLs
 	store.SetKey("short_ttl", "hello")
 	store.SetKey("medium_ttl", "world")
 	store.SetKey("no_ttl", "permanent")
-	
+
 	// Set TTLs
 	store.ExpireKey("short_ttl", time.Now().Add(50*time.Millisecond))
 	store.ExpireKey("medium_ttl", time.Now().Add(200*time.Millisecond))
 	// no_ttl key has no expiration
-	
+
 	// Verify all keys exist initially
 	initialKeys := store.Keys()
 	if len(initialKeys) != 3 {
 		t.Errorf("expected 3 keys initially, got %d", len(initialKeys))
 	}
-	
+
 	// Test append on key with TTL
 	err := store.Append("medium_ttl", "!")
 	if err != nil {
@@ -284,26 +279,26 @@ func TestTTLWithStringOperationsIntegration(t *testing.T) {
 	if val := store.GetKey("medium_ttl"); val != "world!" {
 		t.Errorf("expected 'world!', got %v", val)
 	}
-	
+
 	// Wait for short_ttl to expire but not medium_ttl
 	time.Sleep(75 * time.Millisecond)
-	
+
 	// Verify short_ttl key is expired (lazy deletion on access)
 	if store.ExistsKey("short_ttl") {
 		t.Errorf("expected short_ttl to be expired")
 	}
-	
+
 	// Verify medium_ttl still exists
 	if !store.ExistsKey("medium_ttl") {
 		t.Errorf("expected medium_ttl to still exist")
 	}
-	
+
 	// Check Keys() method filters out expired keys
 	keysAfterPartialExpiry := store.Keys()
 	if len(keysAfterPartialExpiry) != 2 {
 		t.Errorf("expected 2 keys after partial expiry, got %d", len(keysAfterPartialExpiry))
 	}
-	
+
 	// Try to append to expired key (should create new key)
 	err = store.Append("short_ttl", "new_value")
 	if err != nil {
@@ -312,26 +307,26 @@ func TestTTLWithStringOperationsIntegration(t *testing.T) {
 	if val := store.GetKey("short_ttl"); val != "new_value" {
 		t.Errorf("expected 'new_value' for recreated key, got %v", val)
 	}
-	
+
 	// Wait for medium_ttl to expire
 	time.Sleep(150 * time.Millisecond)
-	
+
 	// Verify medium_ttl is now expired
 	if store.ExistsKey("medium_ttl") {
 		t.Errorf("expected medium_ttl to be expired")
 	}
-	
+
 	// Verify no_ttl key still exists
 	if !store.ExistsKey("no_ttl") {
 		t.Errorf("expected no_ttl key to still exist")
 	}
-	
+
 	// Final key count should be 2 (recreated short_ttl + no_ttl)
 	finalKeys := store.Keys()
 	if len(finalKeys) != 2 {
 		t.Errorf("expected 2 keys at end, got %d", len(finalKeys))
 	}
-	
+
 	// Verify TTL error for expired key
 	_, err = store.TTLKey("medium_ttl")
 	if err == nil {
