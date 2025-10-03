@@ -21,6 +21,8 @@ type BinaryTree[T constraints.Ordered] interface {
 	Insert(key T, value interface{})
 	Delete(key T) bool
 	Search(key T) (*BTNode[T], bool)
+	Rank(key T) (int, bool)
+	RevRank(key T) (int, bool)
 	InOrder() []*BTNode[T]
 	PreOrder() []*BTNode[T]
 	PostOrder() []*BTNode[T]
@@ -272,6 +274,58 @@ func (t *BTree[T]) RangeSearch(minVal, maxVal T) []*BTNode[T] {
 	innerRec(t.Root)
 	return result
 }
+func (t *BTree[T]) Rank(key T) (int, bool) {
+	index := 0
+	var found bool
+
+	var inorder func(node *BTNode[T])
+	inorder = func(node *BTNode[T]) {
+		if node == nil || found {
+			return
+		}
+		inorder(node.Left)
+
+		if !found {
+			if node.Key == key {
+				found = true
+				return
+			}
+			index++
+		}
+
+		inorder(node.Right)
+	}
+
+	inorder(t.Root)
+	return index, found
+}
+
+func (t *BTree[T]) RevRank(key T) (int, bool) {
+	index := 0
+	var found bool
+
+	var reverseInorder func(node *BTNode[T])
+	reverseInorder = func(node *BTNode[T]) {
+		if node == nil || found {
+			return
+		}
+		reverseInorder(node.Right)
+
+		if !found {
+			if node.Key == key {
+				found = true
+				return
+			}
+			index++
+		}
+
+		reverseInorder(node.Left)
+	}
+
+	reverseInorder(t.Root)
+	return index, found
+}
+
 func (t *BTree[T]) Size() uint {
 	return t.size
 }

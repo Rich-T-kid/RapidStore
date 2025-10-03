@@ -758,3 +758,61 @@ func TestDeleteRootEdgeCases(t *testing.T) {
 		t.Errorf("expected root to be 15 or 5 after deletion, got %v", tree.Root.Key)
 	}
 }
+
+// --------------------- Rank Test ---------------------
+
+func newBST() *BTree[int] {
+	tree := NewBTree[int]()
+	tree.Insert(10, "a")
+	tree.Insert(5, "b")
+	tree.Insert(15, "c")
+	tree.Insert(20, "d")
+	tree.Insert(12, "e")
+	return tree
+}
+
+func TestRankBasic(t *testing.T) {
+	bst := newBST()
+
+	rank, found := bst.Rank(5)
+	if !found || rank != 0 {
+		t.Errorf("expected rank(5)=0, got %d (found=%v)", rank, found)
+	}
+
+	rank, found = bst.Rank(15)
+	if !found || rank != 3 {
+		t.Errorf("expected rank(15)=3, got %d (found=%v)", rank, found)
+	}
+}
+
+func TestRankNotFound(t *testing.T) {
+	bst := newBST()
+
+	rank, found := bst.Rank(99)
+	if found {
+		t.Errorf("expected 99 not found, got rank=%d", rank)
+	}
+}
+
+func TestRevRankBasic(t *testing.T) {
+	bst := newBST()
+
+	rev, found := bst.RevRank(20)
+	if !found || rev != 0 {
+		t.Errorf("expected revRank(20)=0, got %d (found=%v)", rev, found)
+	}
+
+	rev, found = bst.RevRank(10)
+	if !found || rev != 3 {
+		t.Errorf("expected revRank(10)=3, got %d (found=%v)", rev, found)
+	}
+}
+
+func TestRevRankNotFound(t *testing.T) {
+	bst := newBST()
+
+	rev, found := bst.RevRank(-1)
+	if found {
+		t.Errorf("expected -1 not found, got revRank=%d", rev)
+	}
+}

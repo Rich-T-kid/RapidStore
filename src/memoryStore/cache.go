@@ -73,13 +73,12 @@ type SetManager interface {
 // Sorted Set (ordered, unique with score) || overwrite duplicates
 // each member is unique & associated with a score, stored and ordered by score
 type SortedSetManager interface {
-	ZAdd(key string, score float64, member any) bool              // add member
-	ZRemove(key string, member any) bool                          // remove member
-	ZRange(key string, start, stop int, withScores bool) []any    // members ordred by score (lowest -> highest)
-	ZRevRange(key string, start, stop int, withScores bool) []any // same as Zrange but in reverse (highest -> lowest)
-	ZRank(key string, member any) (int, bool)                     // rank of member (ascending)  -> low score first
-	ZRevRank(key string, member any)                              // rank of member (descending) -> high score first
-	ZScore(key string, member any) (float64, bool)                // score of member
+	ZAdd(key string, score float64, member string) error       // add member
+	ZRemove(key string, member string) error                   // remove member
+	ZRange(key string, start, stop int, withScores bool) []any // members ordred by score (lowest -> highest)
+	ZRank(key string, member string) (int, bool)               // rank of member (ascending)  -> low score first
+	ZRevRank(key string, member string) (int, bool)            // rank of member (descending) -> high score first
+	ZScore(key string, member string) (float64, bool)          // score of member
 	LimitedStorage
 }
 
@@ -633,6 +632,154 @@ func (c *CacheUtility) FlushDB() <-chan bool {
 }
 func NewUtilityManger() UtilityManager {
 	return NewCacheUtility()
+}
+
+type SortedSetStore struct {
+	internalStore map[string]DS.BinaryTree[float64]
+	mbtoval       map[string]float64
+	policy        internal.EvictionPolicy
+	maxSize       uint64
+}
+
+func newSortedSetStore(size uint64, policy string) *SortedSetStore {
+	return &SortedSetStore{
+		policy:        internal.EvictionPolicy(topolicy(policy)),
+		maxSize:       size,
+		internalStore: make(map[string]DS.BinaryTree[float64]),
+		mbtoval:       make(map[string]float64),
+	}
+}
+
+// score is the key and members are the value for the BST
+func (s *SortedSetStore) ZAdd(key string, score float64, member string) error {
+	BST, ok := s.internalStore[key]
+	if !ok {
+		t := DS.NewBinaryTree[float64]()
+		t.Insert(score, member)
+		s.internalStore[key] = t
+		s.mbtoval[member] = score
+		return nil
+	}
+
+	// If member already exists, remove old score
+	if oldScore, exists := s.mbtoval[member]; exists {
+		BST.Delete(oldScore)
+	}
+
+	// Insert new score
+	BST.Insert(score, member)
+	s.mbtoval[member] = score // always update mapping
+
+	return nil
+}
+
+func (s *SortedSetStore) ZRemove(key string, member string) error {
+	BST, ok := s.internalStore[key]
+	if !ok {
+		return fmt.Errorf("key %s does not exist", key)
+	}
+	score, exists := s.mbtoval[member]
+	if !exists {
+		return fmt.Errorf("member %s does not exist in key %s", member, key)
+	}
+	BST.Delete(score)
+	delete(s.mbtoval, member)
+	return nil
+}
+func (s *SortedSetStore) ZRange(key string, start, stop int, withScores bool) []any {
+	BST, ok := s.internalStore[key]
+	if !ok {
+		return []any{}
+	}
+
+	// Get all nodes in ascending order
+	nodes := BST.RangeSearch(-1e18, 1e18) // effectively full range; can adjust depending on type
+	if len(nodes) == 0 {
+		return []any{}
+	}
+
+	// Normalize indices: handle negative start/stop like Redis
+	n := len(nodes)
+	if start < 0 {
+		start = n + start
+	}
+	if stop < 0 {
+		stop = n + stop
+	}
+	if start < 0 {
+		start = 0
+	}
+	if stop >= n {
+		stop = n - 1
+	}
+	if start > stop || start >= n {
+		return []any{}
+	}
+
+	nodes = nodes[start : stop+1]
+
+	// Build result slice
+	var result []any
+	for _, node := range nodes {
+		if withScores {
+			result = append(result, []any{node.Key, node.Value})
+		} else {
+			result = append(result, node.Value)
+		}
+	}
+	return result
+}
+
+func (s *SortedSetStore) ZRank(key string, member string) (int, bool) {
+	BST, ok := s.internalStore[key]
+	if !ok {
+		return -1, false
+	}
+	score, exists := s.mbtoval[member]
+	if !exists {
+		return -1, false
+	}
+	val, exst := BST.Rank(score)
+	if !exst {
+		return -1, false
+	}
+	return val, true
+}
+func (s *SortedSetStore) ZRevRank(key string, member string) (int, bool) {
+	BST, ok := s.internalStore[key]
+	if !ok {
+		return -1, false
+	}
+	score, exists := s.mbtoval[member]
+	if !exists {
+		return -1, false
+	}
+	val, found := BST.RevRank(score)
+	if !found {
+		return -1, false
+	}
+	return val, true
+}
+
+func (s *SortedSetStore) ZScore(key string, member string) (float64, bool) {
+	score, exists := s.mbtoval[member]
+	if !exists {
+		return 0, false
+	}
+	return score, true
+}
+func (s *SortedSetStore) CurrentSize() uint64 { return uint64(len(s.internalStore)) }
+func (s *SortedSetStore) Evict()              {}
+func (s *SortedSetStore) Keys() []string {
+	var res []string
+	for key := range s.internalStore {
+		res = append(res, key)
+	}
+	return res
+}
+
+func NewSortedSetManager(size uint64, policy string) SortedSetManager {
+	return newSortedSetStore(size, policy)
 }
 
 func topolicy(s string) int {
