@@ -333,3 +333,152 @@ func TestTTLWithStringOperationsIntegration(t *testing.T) {
 		t.Errorf("expected error when getting TTL for expired key")
 	}
 }
+
+// ------------------------- Large Intergration test of the entire interface -------------------------
+// 1. Set, Get, Exists, Delete Integration
+// Ensures SetKey works, GetKey retrieves correctly, ExistsKey reflects state, DeleteKey removes.
+func TestSetGetExistsDeleteIntegration(t *testing.T) {
+	store := newTestStore()
+
+	store.SetKey("foo", "bar")
+	if !store.ExistsKey("foo") {
+		t.Errorf("expected key foo to exist")
+	}
+
+	val := store.GetKey("foo")
+	if val != "bar" {
+		t.Errorf("expected bar, got %v", val)
+	}
+
+	store.DeleteKey("foo")
+	if store.ExistsKey("foo") {
+		t.Errorf("expected foo to be deleted")
+	}
+}
+
+// 2. ExpireKey and TTLKey Integration
+// Ensures expiration works and TTL decreases over time.
+func TestExpireAndTTLIntegration(t *testing.T) {
+	store := newTestStore()
+
+	store.SetKey("session", "token123")
+	ok := store.ExpireKey("session", time.Now().Add(50*time.Millisecond))
+	if !ok {
+		t.Errorf("expected true on setting expiration")
+	}
+
+	ttl, err := store.TTLKey("session")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ttl <= 0 {
+		t.Errorf("expected positive TTL, got %v", ttl)
+	}
+
+	time.Sleep(60 * time.Millisecond)
+	if store.ExistsKey("session") {
+		t.Errorf("expected session to expire")
+	}
+}
+
+// 3. Increment/Decrement Integration
+// Ensures numeric keys increment and decrement correctly, and invalid types error out.
+func TestIncrementDecrementIntegration(t *testing.T) {
+	store := newTestStore()
+
+	// First increment on missing key initializes at 1
+	val, err := store.Increment("counter")
+	if err != nil || val != 1 {
+		t.Errorf("expected counter=1, got %v err=%v", val, err)
+	}
+
+	// Increment again
+	val, _ = store.Increment("counter")
+	if val != 2 {
+		t.Errorf("expected counter=2, got %v", val)
+	}
+
+	// Decrement twice
+	store.Decrement("counter")
+	val, _ = store.Decrement("counter")
+	if val != 0 {
+		t.Errorf("expected counter=0, got %v", val)
+	}
+
+	// Non-numeric
+	store.SetKey("str", "hello")
+	_, err = store.Increment("str")
+	if err == nil {
+		t.Errorf("expected error incrementing string value")
+	}
+}
+
+// 4. Append Integration
+// Ensures string values can be appended to, non-strings error out.
+func TestAppendIntegration(t *testing.T) {
+	store := newTestStore()
+
+	store.SetKey("greet", "hello")
+	err := store.Append("greet", " world")
+	if err != nil {
+		t.Errorf("unexpected error appending: %v", err)
+	}
+
+	val := store.GetKey("greet")
+	if val != "hello world" {
+		t.Errorf("expected hello world, got %v", val)
+	}
+
+	// Append to non-string
+	store.SetKey("num", 42)
+	err = store.Append("num", "x")
+	if err == nil {
+		t.Errorf("expected error appending to non-string value")
+	}
+}
+
+// 5. MSet and Keys Integration
+// Ensures multiple key-value pairs can be set at once, and Keys returns all.
+func TestMSetAndKeysIntegration(t *testing.T) {
+	store := newTestStore()
+
+	store.SetKey("a", 1)
+	store.SetKey("b", 2)
+
+	keys := store.Keys()
+	if len(keys) < 2 {
+		t.Errorf("expected at least 2 keys, got %v", keys)
+	}
+	if !containsS(keys, "a") || !containsS(keys, "b") {
+		t.Errorf("expected keys [a,b], got %v", keys)
+	}
+}
+
+// 6. Edge Case: Get Missing Key, Expire Missing, Delete Missing
+// Ensures safe operations on missing keys.
+func TestMissingKeysIntegration(t *testing.T) {
+	store := newTestStore()
+
+	// Get missing
+	val := store.GetKey("notthere")
+	if val != "" {
+		t.Errorf("expected empty string for missing key, got %v", val)
+	}
+
+	// Expire missing
+	ok := store.ExpireKey("notthere", time.Now().Add(time.Minute))
+	if ok {
+		t.Errorf("expected false when expiring missing key")
+	}
+
+	// Delete missing should not panic
+	store.DeleteKey("notthere")
+}
+func containsS(slice []string, val string) bool {
+	for _, s := range slice {
+		if s == val {
+			return true
+		}
+	}
+	return false
+}

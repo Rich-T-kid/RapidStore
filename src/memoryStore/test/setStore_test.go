@@ -163,3 +163,97 @@ func contains(slice []any, val any) bool {
 	}
 	return false
 }
+
+// ------------------------- Large Intergration test of the entire interface -------------------------
+
+// 1. SAdd + Uniqueness Integration
+// Ensures that duplicates are not stored and size reflects unique members only.
+func TestSAddUniquenessIntegration(t *testing.T) {
+	store := newSetStore()
+
+	store.SAdd("nums", 1)
+	store.SAdd("nums", 2)
+	store.SAdd("nums", 2) // duplicate
+
+	if size := store.SCard("nums"); size != 2 {
+		t.Errorf("expected size=2, got %d", size)
+	}
+
+	members := store.SMembers("nums")
+	if !contains(members, 1) || !contains(members, 2) {
+		t.Errorf("expected members [1,2], got %v", members)
+	}
+}
+
+// 2. SRem + Membership Integration
+// Ensures removing an element works and membership reflects removal.
+func TestSRemAndMembershipIntegration(t *testing.T) {
+	store := newSetStore()
+
+	store.SAdd("letters", "a")
+	store.SAdd("letters", "b")
+
+	ok := store.SRem("letters", "a")
+	if !ok {
+		t.Errorf("expected SRem to succeed for existing element")
+	}
+
+	if store.SIsMember("letters", "a") {
+		t.Errorf("expected 'a' to be removed")
+	}
+
+	if !store.SIsMember("letters", "b") {
+		t.Errorf("expected 'b' to remain")
+	}
+}
+
+// 3. Remove Non-Existent Member Integration
+// Ensures removing non-existing elements returns false and doesn't change set.
+func TestSRemNonExistentIntegration(t *testing.T) {
+	store := newSetStore()
+
+	store.SAdd("nums", 1)
+	ok := store.SRem("nums", 99) // doesn't exist
+	if ok {
+		t.Errorf("expected false when removing non-existent element")
+	}
+
+	if size := store.SCard("nums"); size != 1 {
+		t.Errorf("expected size=1 after failed removal, got %d", size)
+	}
+}
+
+// 4. Multiple Keys Isolation Integration
+// Ensures sets with different keys are independent.
+func TestMultipleKeysIsolationIntegrationSet(t *testing.T) {
+	store := newSetStore()
+
+	store.SAdd("nums", 10)
+	store.SAdd("letters", "z")
+
+	if !store.SIsMember("nums", 10) {
+		t.Errorf("expected 10 in nums")
+	}
+	if store.SIsMember("nums", "z") {
+		t.Errorf("expected z not in nums")
+	}
+
+	if !store.SIsMember("letters", "z") {
+		t.Errorf("expected z in letters")
+	}
+}
+
+// 5. Edge Case: Empty Set Operations
+// Ensures SMembers on empty set returns empty slice and SCard=0.
+func TestEmptySetIntegration(t *testing.T) {
+	store := newSetStore()
+
+	if size := store.SCard("missing"); size != 0 {
+		t.Errorf("expected 0 size for missing key, got %d", size)
+	}
+
+	members := store.SMembers("missing")
+	if len(members) != 0 {
+		t.Errorf("expected empty slice for SMembers on missing key, got %v", members)
+	}
+}
