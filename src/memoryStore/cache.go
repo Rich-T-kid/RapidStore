@@ -3,7 +3,8 @@ package memorystore
 import (
 	"RapidStore/memoryStore/internal"
 	"RapidStore/memoryStore/internal/DS"
-	"RapidStore/memoryStore/internal/server"
+
+	//"RapidStore/memoryStore/internal/server"
 	"errors"
 	"fmt"
 	"reflect"
@@ -98,15 +99,8 @@ type SortedSetManager interface {
 	LimitedStorage
 }
 
-type UtilityManager interface {
-	// mabey change this to a stream of a struct
-	Info() <-chan server.ServerInfo // server metadata (uptime,timestamp,total keys, memory usage, Write/Read ops, size of Write ahead log, active connections, total request, cpu load, last command)
-	Monitor() <-chan string         // chan of all the commands processed by the server (commands and their args)
-	FlushDB() <-chan bool           // clear current db
-}
-
 type Cache interface {
-	UtilityManager
+	//UtilityManager
 	KeyInterface
 	HashTableManager
 	ListManager
@@ -128,7 +122,6 @@ type RapidStoreServer struct {
 	SequenceManager ListManager
 	SetM            SetManager
 	SortSetM        SortedSetManager
-	Utility         UtilityManager
 	// Config Info
 	MaxMemory      uint64 // Maximum memory usage in bytes
 	MaxKeys        uint64 // Maximum number of keys
@@ -147,11 +140,11 @@ func NewRapidStore(option ...func(*RapidStoreServer)) *RapidStoreServer {
 		o(&t)
 	}
 	r := &RapidStoreServer{
-		KeyManger:              NewKeyStore(size, policy),
-		HashManager:            NewFieldStore(size, policy),
-		SetM:                   NewSetManager(size, policy),
-		SortSetM:               newSortedSetStore(size, policy),
-		Utility:                NewCacheUtility(),
+		KeyManger:   NewKeyStore(size, policy),
+		HashManager: NewFieldStore(size, policy),
+		SetM:        NewSetManager(size, policy),
+		SortSetM:    newSortedSetStore(size, policy),
+		//Utility:                NewCacheUtility(),
 		MaxMemory:              t.MaxMemory,
 		MaxKeys:                t.MaxKeys,
 		EvictionPolicy:         t.EvictionPolicy,
@@ -259,9 +252,6 @@ func (r *RapidStoreServer) ZScore(key string, member string) (float64, bool) {
 }
 
 // UtilityManager methods
-func (r *RapidStoreServer) Info() <-chan server.ServerInfo { return r.Utility.Info() }
-func (r *RapidStoreServer) Monitor() <-chan string         { return r.Utility.Monitor() }
-func (r *RapidStoreServer) FlushDB() <-chan bool           { return r.Utility.FlushDB() }
 
 // LimitedStorage methods - route to KeyManager by default
 func (r *RapidStoreServer) CurrentSize() uint64 { return r.KeyManger.CurrentSize() }
@@ -772,33 +762,6 @@ func (u *UniqueSetStore) Keys() []string { // list all keys in the store
 }
 func NewSetManager(size uint64, policy string) SetManager {
 	return NewUniqueSetStore(size, policy)
-}
-
-/* ---------------------- Implements the UtilityManager Interface --------------------- */
-type CacheUtility struct {
-	infoChan    chan server.ServerInfo
-	commandChan chan string
-	clearDB     chan bool
-}
-
-func NewCacheUtility() *CacheUtility {
-	return &CacheUtility{
-		infoChan:    make(chan server.ServerInfo),
-		commandChan: make(chan string),
-		clearDB:     make(chan bool),
-	}
-}
-func (c *CacheUtility) Info() <-chan server.ServerInfo {
-	return c.infoChan
-}
-func (c *CacheUtility) Monitor() <-chan string {
-	return c.commandChan
-}
-func (c *CacheUtility) FlushDB() <-chan bool {
-	return c.clearDB
-}
-func NewUtilityManger() UtilityManager {
-	return NewCacheUtility()
 }
 
 /* ---------------------- Implements the SortedSetManager Interface --------------------- */
