@@ -1,0 +1,22 @@
+FROM golang:latest
+
+WORKDIR /app
+
+COPY . .
+RUN go mod tidy
+RUN go build -o main .
+EXPOSE 3333
+
+CMD ["./main"]
+
+
+#docker buildx create --use --name RapidStore || docker buildx use Rapidbuilder-instance
+#docker buildx build --no-cache --platform linux/amd64,linux/arm64 -t rich329/Rapid-instance:v0.0.0 --push .
+
+
+## docker pull rich329/Rapid-instance:v0.0.0
+## docker run -d -p 3333:3333 --name RapidStore-instance RapidStore-instance:v0.0.0
+## docker exec -it RapidStore-instance /bin/bash
+## docker logs -f RapidStore-instance
+## docker stop RapidStore-instance
+## docker rm RapidStore-instance
