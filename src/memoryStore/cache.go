@@ -96,12 +96,159 @@ type Cache interface {
 	ListManager
 	SetManager
 	SortedSetManager
-	initStore(policy internal.EvictionPolicy, maxSize uint64)
+	//initStore(policy internal.EvictionPolicy, maxSize uint64)
+}
+type RapidStoreServer struct {
+	// Keep your managers as named fields for explicit access
+	KeyManger       KeyInterface
+	HashManager     HashTableManager
+	SequenceManager ListManager
+	SetM            SetManager
+	SortSetM        SortedSetManager
+	Utility         UtilityManager
+	// Config Info
+	MaxMemory      uint64 // Maximum memory usage in bytes
+	MaxKeys        uint64 // Maximum number of keys
+	EvictionPolicy string // "lru", "lfu", "random", "volatile-lru", etc.
+
+	// Memory monitoring
+	MemoryWarningThreshold float64       // Warn at 80% memory usage
+	MemoryCheckInterval    time.Duration // How often to check memory usage
 }
 
-func NewCache() Cache {
-	return nil
+func NewRapidStore(option ...func(*RapidStoreServer)) *RapidStoreServer {
+	var size uint64 = 30
+	var policy = "lru"
+	t := RapidStoreServer{}
+	for _, o := range option {
+		o(&t)
+	}
+	r := &RapidStoreServer{
+		KeyManger:              NewKeyStore(size, policy),
+		HashManager:            NewFieldStore(size, policy),
+		SetM:                   NewSetManager(size, policy),
+		SortSetM:               newSortedSetStore(size, policy),
+		Utility:                NewCacheUtility(),
+		MaxMemory:              t.MaxMemory,
+		MaxKeys:                t.MaxKeys,
+		EvictionPolicy:         t.EvictionPolicy,
+		MemoryWarningThreshold: t.MemoryWarningThreshold,
+		MemoryCheckInterval:    t.MemoryCheckInterval,
+	}
+	fmt.Printf("%v\n", r)
+	return r
 }
+
+func WithMaxMemory(max uint64) func(*RapidStoreServer) {
+	return func(c *RapidStoreServer) {
+		c.MaxMemory = max
+	}
+}
+func WithMaxKeys(max uint64) func(*RapidStoreServer) {
+	return func(c *RapidStoreServer) {
+		c.MaxKeys = max
+	}
+}
+func WithEvictionPolicy(policy string) func(*RapidStoreServer) {
+	return func(c *RapidStoreServer) {
+		c.EvictionPolicy = policy
+	}
+}
+func WithMemoryWarningThreashold(cap float64) func(*RapidStoreServer) {
+	return func(c *RapidStoreServer) {
+		c.MemoryWarningThreshold = cap
+	}
+}
+
+func WithMemoryCheckInternal(dur time.Duration) func(*RapidStoreServer) {
+	return func(c *RapidStoreServer) {
+		c.MemoryCheckInterval = dur
+	}
+}
+
+func NewCache(option ...func(*RapidStoreServer)) Cache {
+	return NewRapidStore(option...)
+}
+
+func (r *RapidStoreServer) SetKey(key string, value any) { r.KeyManger.SetKey(key, value) }
+func (r *RapidStoreServer) GetKey(key string) any        { return r.KeyManger.GetKey(key) }
+func (r *RapidStoreServer) DeleteKey(key string)         { r.KeyManger.DeleteKey(key) }
+func (r *RapidStoreServer) ExpireKey(key string, duration time.Time) bool {
+	return r.KeyManger.ExpireKey(key, duration)
+}
+func (r *RapidStoreServer) TTLKey(key string) (time.Duration, error) { return r.KeyManger.TTLKey(key) }
+func (r *RapidStoreServer) ExistsKey(key string) bool                { return r.KeyManger.ExistsKey(key) }
+func (r *RapidStoreServer) WatchKey(key string) <-chan bool          { return r.KeyManger.WatchKey(key) }
+func (r *RapidStoreServer) Increment(key string) (int64, error)      { return r.KeyManger.Increment(key) }
+func (r *RapidStoreServer) Decrement(key string) (int64, error)      { return r.KeyManger.Decrement(key) }
+func (r *RapidStoreServer) Append(key string, suffix string) error {
+	return r.KeyManger.Append(key, suffix)
+}
+func (r *RapidStoreServer) MSet(pairs ...basicSet) bool { return r.KeyManger.MSet(pairs...) }
+
+// HashTableManager methods
+func (r *RapidStoreServer) HSet(key, field string, value any, duration time.Duration) bool {
+	return r.HashManager.HSet(key, field, value, duration)
+}
+func (r *RapidStoreServer) HGet(key, field string) (any, error) {
+	return r.HashManager.HGet(key, field)
+}
+func (r *RapidStoreServer) HGetAll(key string) map[string]any { return r.HashManager.HGetAll(key) }
+func (r *RapidStoreServer) HDel(key, field string)            { r.HashManager.HDel(key, field) }
+func (r *RapidStoreServer) HExists(key, field string) bool    { return r.HashManager.HExists(key, field) }
+
+// ListManager methods
+func (r *RapidStoreServer) LPush(key string, value any) error {
+	return r.SequenceManager.LPush(key, value)
+}
+func (r *RapidStoreServer) RPush(key string, value any) error {
+	return r.SequenceManager.RPush(key, value)
+}
+func (r *RapidStoreServer) LPop(key string) (any, error) { return r.SequenceManager.LPop(key) }
+func (r *RapidStoreServer) RPop(key string) (any, error) { return r.SequenceManager.RPop(key) }
+func (r *RapidStoreServer) LRange(key string, start, stop int) ([]any, error) {
+	return r.SequenceManager.LRange(key, start, stop)
+}
+func (r *RapidStoreServer) Size(key string) uint { return r.SequenceManager.Size(key) }
+
+// SetManager methods
+func (r *RapidStoreServer) SAdd(key string, member any)      { r.SetM.SAdd(key, member) }
+func (r *RapidStoreServer) SMembers(key string) []any        { return r.SetM.SMembers(key) }
+func (r *RapidStoreServer) SRem(key string, member any) bool { return r.SetM.SRem(key, member) }
+func (r *RapidStoreServer) SIsMember(key string, member any) bool {
+	return r.SetM.SIsMember(key, member)
+}
+func (r *RapidStoreServer) SCard(key string) uint { return r.SetM.SCard(key) }
+
+// SortedSetManager methods
+func (r *RapidStoreServer) ZAdd(key string, score float64, member string) error {
+	return r.SortSetM.ZAdd(key, score, member)
+}
+func (r *RapidStoreServer) ZRemove(key string, member string) error {
+	return r.SortSetM.ZRemove(key, member)
+}
+func (r *RapidStoreServer) ZRange(key string, start, stop int, withScores bool) []any {
+	return r.SortSetM.ZRange(key, start, stop, withScores)
+}
+func (r *RapidStoreServer) ZRank(key string, member string) (int, bool) {
+	return r.SortSetM.ZRank(key, member)
+}
+func (r *RapidStoreServer) ZRevRank(key string, member string) (int, bool) {
+	return r.SortSetM.ZRevRank(key, member)
+}
+func (r *RapidStoreServer) ZScore(key string, member string) (float64, bool) {
+	return r.SortSetM.ZScore(key, member)
+}
+
+// UtilityManager methods
+func (r *RapidStoreServer) Info() <-chan server.ServerInfo { return r.Utility.Info() }
+func (r *RapidStoreServer) Monitor() <-chan string         { return r.Utility.Monitor() }
+func (r *RapidStoreServer) FlushDB() <-chan bool           { return r.Utility.FlushDB() }
+
+// LimitedStorage methods - route to KeyManager by default
+func (r *RapidStoreServer) CurrentSize() uint64 { return r.KeyManger.CurrentSize() }
+func (r *RapidStoreServer) Evict()              { r.KeyManger.Evict() }
+func (r *RapidStoreServer) Keys() []string      { return r.KeyManger.Keys() }
 
 /* Implements the KeyInterface */
 type keyStore struct {
