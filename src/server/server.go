@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 )
 
@@ -265,13 +266,28 @@ func (s *Server) Start() error {
 				continue
 			}
 		}
+		s.productionStats.IncrementActiveConnections()
 		go s.handleConnection(conn)
 	}
 }
 func (s *Server) handleConnection(conn net.Conn) {
 	defer conn.Close()
+	defer s.productionStats.DecrementActiveConnections()
 	// Handle client connection
 	fmt.Printf("Accepted connection from %s\n", conn.RemoteAddr().String())
+	buff := make([]byte, 1024)
+	n, err := conn.Read(buff)
+	if err != nil {
+		fmt.Printf("Error reading from connection: %v\n", err)
+		return
+	}
+	msg := strings.TrimSpace(string(buff[:n]))
+	if msg == "Close" {
+		s.Stop()
+	} else {
+		responseMsg := fmt.Sprintf("Echo: %s\n", msg)
+		conn.Write([]byte(responseMsg))
+	}
 	// Here you would read commands from the connection and process them
 }
 func (s *Server) Stop() error {
@@ -281,6 +297,8 @@ func (s *Server) Stop() error {
 	return nil
 }
 func (s *Server) healthChecks() {
+	// Need to define the protocol for health checks
+	//TODO: Implement health check listener & writer
 
 }
 
@@ -293,12 +311,11 @@ func (s *Server) exportStats() {
 			fmt.Printf("Error collecting GC stats: %v\n", err)
 			return
 		}
-		var stats = map[string]interface{}{
+		var _ = map[string]interface{}{
 			"timeStamp":  time.Now(),
 			"serverInfo": s.productionStats,
 			"gcStats":    *gcStats,
 		}
-		fmt.Printf("Exported Stats: %+v\n", stats)
 		time.Sleep(s.config.monitoring.MetricsInterval)
 
 	}
