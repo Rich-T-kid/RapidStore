@@ -133,7 +133,7 @@ type RapidStoreServer struct {
 }
 
 func NewRapidStore(option ...func(*RapidStoreServer)) *RapidStoreServer {
-	var size uint64 = 30
+	var size uint64 = 500
 	var policy = "lru"
 	t := RapidStoreServer{}
 	for _, o := range option {

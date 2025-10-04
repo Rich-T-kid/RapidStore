@@ -2,22 +2,19 @@ package server
 
 import (
 	"runtime"
+	"sync/atomic"
 	"time"
 
 	"github.com/shirou/gopsutil/cpu"
 )
 
 // Metadata holds server metadata information.
-type ServerInfo struct {
-	Timestamp         time.Time `json:"timestamp"`          // when info was collected
-	TotalKeys         uint64    `json:"total_keys"`         // number of keys stored
-	MemoryUsageBytes  uint64    `json:"memory_usage_bytes"` // memory consumed by the store
-	WriteOps          uint64    `json:"write_ops"`          // total write operations
-	ReadOps           uint64    `json:"read_ops"`           // total read operations
-	ActiveConnections uint64    `json:"active_connections"` // currently open client connections
-	TotalRequests     uint64    `json:"total_requests"`     // all requests processed
-	LastCommand       string    `json:"last_command"`       // last executed command
-	IndepthStats      GcStats   `json:"indepth_stats"`      // detailed stats about the Go runtime
+type ServerInfoMetaData struct {
+	WriteOps          uint64  `json:"write_ops"`          // total write operations
+	ReadOps           uint64  `json:"read_ops"`           // total read operations
+	ActiveConnections uint64  `json:"active_connections"` // currently open client connections
+	TotalRequests     uint64  `json:"total_requests"`     // all requests processed
+	IndepthStats      GcStats `json:"indepth_stats"`      // detailed stats about the Go runtime
 }
 type GcStats struct {
 	UptimeSeconds  uint64  `json:"uptime_seconds"` // how long server has been up
@@ -33,9 +30,25 @@ type GcStats struct {
 	Goroutines     int     // number of goroutines
 }
 
+func (smd *ServerInfoMetaData) IncrementReadOps() {
+	atomic.AddUint64(&smd.ReadOps, 1)
+}
+func (smd *ServerInfoMetaData) IncrementWriteOps() {
+	atomic.AddUint64(&smd.WriteOps, 1)
+}
+func (smd *ServerInfoMetaData) IncrementTotalRequests() {
+	atomic.AddUint64(&smd.TotalRequests, 1)
+}
+func (smd *ServerInfoMetaData) IncrementActiveConnections() {
+	atomic.AddUint64(&smd.ActiveConnections, 1)
+}
+func (smd *ServerInfoMetaData) DecrementActiveConnections() {
+	atomic.AddUint64(&smd.ActiveConnections, ^uint64(0))
+}
+
 var startTime = time.Now()
 
-func CollectGcStats() (*GcStats, error) {
+func collectGcStats() (*GcStats, error) {
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
 
@@ -60,40 +73,6 @@ func CollectGcStats() (*GcStats, error) {
 	}
 
 	return stats, nil
-}
-
-type CacheUtility struct {
-	infoChan    chan ServerInfo
-	commandChan chan string
-	clearDB     chan bool
-}
-
-func NewCacheUtility() *CacheUtility {
-	return &CacheUtility{
-		infoChan:    make(chan ServerInfo),
-		commandChan: make(chan string),
-		clearDB:     make(chan bool),
-	}
-}
-func (c *CacheUtility) Info() <-chan ServerInfo {
-	return c.infoChan
-}
-func (c *CacheUtility) Monitor() <-chan string {
-	return c.commandChan
-}
-func (c *CacheUtility) FlushDB() <-chan bool {
-	return c.clearDB
-}
-func NewUtilityManger() UtilityManager {
-	return NewCacheUtility()
-}
-
-/* ---------------------- Implements the UtilityManager Interface --------------------- */
-type UtilityManager interface {
-	// mabey change this to a stream of a struct
-	Info() <-chan ServerInfo // server metadata (uptime,timestamp,total keys, memory usage, Write/Read ops, size of Write ahead log, active connections, total request, cpu load, last command)
-	Monitor() <-chan string  // chan of all the commands processed by the server (commands and their args)
-	FlushDB() <-chan bool    // clear current db
 }
 
 type ServerConfig struct {
@@ -123,10 +102,10 @@ func defaultPersistenceConfig() *PersistenceConfig {
 }
 
 type MonitoringConfig struct {
-	MetricsPort int
-	MetricsPath string
-
-	LogFile string
+	MetricsPort     int
+	MetricsPath     string
+	MetricsInterval time.Duration
+	LogFile         string
 
 	HealthCheckEnabled bool
 	HealthCheckPort    int
@@ -136,6 +115,7 @@ func defaultMonitoringConfig() *MonitoringConfig {
 	return &MonitoringConfig{
 		MetricsPort:        9090,
 		MetricsPath:        "/metrics",
+		MetricsInterval:    750 * time.Millisecond,
 		LogFile:            "./rapidstore.log",
 		HealthCheckEnabled: true,
 		HealthCheckPort:    8080,
@@ -155,7 +135,7 @@ func defaultElectionConfig() *ElectionConfig {
 		live:             false,
 		ZookeeperServers: []string{"localhost:2181"},
 		ElectionPath:     "/rapidstore/leader",
-		NodeID:           "",
+		NodeID:           "(TDB) remove and read from zookeeper", // TODO:
 		Timeout:          5 * time.Second,
 	}
 }

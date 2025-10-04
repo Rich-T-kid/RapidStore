@@ -9,7 +9,7 @@ import (
 func main() {
 	s := server.NewServer()
 	go func() {
-		time.Sleep(3 * time.Second)
+		time.Sleep(10 * time.Second)
 		fmt.Printf("going to stop the server now\n")
 		s.Stop()
 	}()

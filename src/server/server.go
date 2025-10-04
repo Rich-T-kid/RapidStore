@@ -207,7 +207,8 @@ func defeaultServerConfig() *ServerConfig {
 }
 
 type Server struct {
-	config *ServerConfig
+	config          *ServerConfig
+	productionStats ServerInfoMetaData
 	// other fields like listener, handlers, etc.
 	ramCache memorystore.Cache
 	close    chan struct{}
@@ -233,15 +234,17 @@ func NewServer(options ...serverOption) *Server {
 func (s *Server) Start() error {
 	// Implementation to start the server
 	s.ramCache = memorystore.NewCache()
-	fmt.Printf("Cache initialized: %v\n", s.ramCache)
 	fmt.Printf("Starting server on %s:%d\n", s.config.Address, s.config.Port)
 	s.close = make(chan struct{})
 	list, err := net.Listen("tcp", fmt.Sprintf("%s:%d", s.config.Address, s.config.Port))
 	if err != nil {
 		return fmt.Errorf("failed to start server: %v", err)
 	}
+	// background goroutine
 	go func() {
 		s.isLive = true
+		s.healthChecks()
+		s.exportStats()
 		<-s.close
 		list.Close()
 	}()
@@ -276,4 +279,27 @@ func (s *Server) Stop() error {
 	s.close <- struct{}{}
 	fmt.Printf("Stopping server on %s:%d\n", s.config.Address, s.config.Port)
 	return nil
+}
+func (s *Server) healthChecks() {
+
+}
+
+func (s *Server) exportStats() {
+	// TODO: Should write out to metrics file || endpoin. not super important since theres no ingress @ the moment
+	for s.isLive {
+		fmt.Printf("is live %v\n", s.isLive)
+		gcStats, err := collectGcStats()
+		if err != nil {
+			fmt.Printf("Error collecting GC stats: %v\n", err)
+			return
+		}
+		var stats = map[string]interface{}{
+			"timeStamp":  time.Now(),
+			"serverInfo": s.productionStats,
+			"gcStats":    *gcStats,
+		}
+		fmt.Printf("Exported Stats: %+v\n", stats)
+		time.Sleep(s.config.monitoring.MetricsInterval)
+
+	}
 }
