@@ -1,10 +1,18 @@
 package main
 
 import (
-	memorystore "RapidStore/memoryStore"
+	"RapidStore/server"
+	"fmt"
+	"time"
 )
 
 func main() {
-	_ = memorystore.NewCache()
-
+	s := server.NewServer()
+	go func() {
+		time.Sleep(3 * time.Second)
+		fmt.Printf("going to stop the server now\n")
+		s.Stop()
+	}()
+	s.Start()
+	fmt.Printf("done running the server\n")
 }

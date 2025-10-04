@@ -13,18 +13,33 @@ import (
 var (
 	neverExpires = time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC)
 )
+var (
+	// errors
+	ErrKeyNotFound     = errors.New("key not found")
+	ErrKeyDoesNotExist = errors.New("key does not exist")
+	ErrValueWrongType  = func(excp, got any) error {
+		return fmt.Errorf("expected value of type %T but got %T", excp, got)
+	}
+	ErrMaxSizeReached = func(max uint64) error {
+		return fmt.Errorf("maximum size of %d reached, cannot add more items", max)
+	}
+	ErrStructureEmpty = errors.New("data structure is empty")
+)
 
 type basicSet struct {
 	key   string
 	value GeneralValue
 }
 
+// LimitedStorage defines methods for managing storage with size limits and eviction policies
+// this is mainly for internal use to manage memory and key limits
 type LimitedStorage interface {
 	CurrentSize() uint64
 	Evict()
 	Keys() []string // list all keys in the store
 }
 
+// KeyInterface defines methods for managing key-value pairs in the cache
 type KeyInterface interface {
 	SetKey(key string, value any)
 	GetKey(key string) any
@@ -40,6 +55,7 @@ type KeyInterface interface {
 	LimitedStorage
 }
 
+// HashTableManager defines methods for managing hash tables in the cache
 type HashTableManager interface {
 	HSet(key, field string, value any, duration time.Duration) bool // set a field ex: HSET user:!23 name "alice" (bool indicates wheater a new hashset was created)
 	HGet(key, field string) (any, error)                            // get a field ex: HGET user:!23 name -> "alice"
@@ -96,14 +112,163 @@ type Cache interface {
 	ListManager
 	SetManager
 	SortedSetManager
-	initStore(policy internal.EvictionPolicy, maxSize uint64)
+	//initStore(policy internal.EvictionPolicy, maxSize uint64)
 }
 
-func NewCache() Cache {
-	return nil
+func NewCache(option ...func(*RapidStoreServer)) Cache {
+	return NewRapidStore(option...)
 }
 
-/* Implements the KeyInterface */
+// Sole implementation of the Cache interface
+// ---------------- RapidStoreServer ----------------
+type RapidStoreServer struct {
+	// Keep your managers as named fields for explicit access
+	KeyManger       KeyInterface
+	HashManager     HashTableManager
+	SequenceManager ListManager
+	SetM            SetManager
+	SortSetM        SortedSetManager
+	Utility         UtilityManager
+	// Config Info
+	MaxMemory      uint64 // Maximum memory usage in bytes
+	MaxKeys        uint64 // Maximum number of keys
+	EvictionPolicy string // "lru", "lfu", "random", "volatile-lru", etc.
+
+	// Memory monitoring
+	MemoryWarningThreshold float64       // Warn at 80% memory usage
+	MemoryCheckInterval    time.Duration // How often to check memory usage
+}
+
+func NewRapidStore(option ...func(*RapidStoreServer)) *RapidStoreServer {
+	var size uint64 = 30
+	var policy = "lru"
+	t := RapidStoreServer{}
+	for _, o := range option {
+		o(&t)
+	}
+	r := &RapidStoreServer{
+		KeyManger:              NewKeyStore(size, policy),
+		HashManager:            NewFieldStore(size, policy),
+		SetM:                   NewSetManager(size, policy),
+		SortSetM:               newSortedSetStore(size, policy),
+		Utility:                NewCacheUtility(),
+		MaxMemory:              t.MaxMemory,
+		MaxKeys:                t.MaxKeys,
+		EvictionPolicy:         t.EvictionPolicy,
+		MemoryWarningThreshold: t.MemoryWarningThreshold,
+		MemoryCheckInterval:    t.MemoryCheckInterval,
+	}
+	return r
+}
+
+func WithMaxMemory(max uint64) func(*RapidStoreServer) {
+	return func(c *RapidStoreServer) {
+		c.MaxMemory = max
+	}
+}
+func WithMaxKeys(max uint64) func(*RapidStoreServer) {
+	return func(c *RapidStoreServer) {
+		c.MaxKeys = max
+	}
+}
+func WithEvictionPolicy(policy string) func(*RapidStoreServer) {
+	return func(c *RapidStoreServer) {
+		c.EvictionPolicy = policy
+	}
+}
+func WithMemoryWarningThreashold(cap float64) func(*RapidStoreServer) {
+	return func(c *RapidStoreServer) {
+		c.MemoryWarningThreshold = cap
+	}
+}
+
+func WithMemoryCheckInternal(dur time.Duration) func(*RapidStoreServer) {
+	return func(c *RapidStoreServer) {
+		c.MemoryCheckInterval = dur
+	}
+}
+
+func (r *RapidStoreServer) SetKey(key string, value any) { r.KeyManger.SetKey(key, value) }
+func (r *RapidStoreServer) GetKey(key string) any        { return r.KeyManger.GetKey(key) }
+func (r *RapidStoreServer) DeleteKey(key string)         { r.KeyManger.DeleteKey(key) }
+func (r *RapidStoreServer) ExpireKey(key string, duration time.Time) bool {
+	return r.KeyManger.ExpireKey(key, duration)
+}
+func (r *RapidStoreServer) TTLKey(key string) (time.Duration, error) { return r.KeyManger.TTLKey(key) }
+func (r *RapidStoreServer) ExistsKey(key string) bool                { return r.KeyManger.ExistsKey(key) }
+func (r *RapidStoreServer) WatchKey(key string) <-chan bool          { return r.KeyManger.WatchKey(key) }
+func (r *RapidStoreServer) Increment(key string) (int64, error)      { return r.KeyManger.Increment(key) }
+func (r *RapidStoreServer) Decrement(key string) (int64, error)      { return r.KeyManger.Decrement(key) }
+func (r *RapidStoreServer) Append(key string, suffix string) error {
+	return r.KeyManger.Append(key, suffix)
+}
+func (r *RapidStoreServer) MSet(pairs ...basicSet) bool { return r.KeyManger.MSet(pairs...) }
+
+// HashTableManager methods
+func (r *RapidStoreServer) HSet(key, field string, value any, duration time.Duration) bool {
+	return r.HashManager.HSet(key, field, value, duration)
+}
+func (r *RapidStoreServer) HGet(key, field string) (any, error) {
+	return r.HashManager.HGet(key, field)
+}
+func (r *RapidStoreServer) HGetAll(key string) map[string]any { return r.HashManager.HGetAll(key) }
+func (r *RapidStoreServer) HDel(key, field string)            { r.HashManager.HDel(key, field) }
+func (r *RapidStoreServer) HExists(key, field string) bool    { return r.HashManager.HExists(key, field) }
+
+// ListManager methods
+func (r *RapidStoreServer) LPush(key string, value any) error {
+	return r.SequenceManager.LPush(key, value)
+}
+func (r *RapidStoreServer) RPush(key string, value any) error {
+	return r.SequenceManager.RPush(key, value)
+}
+func (r *RapidStoreServer) LPop(key string) (any, error) { return r.SequenceManager.LPop(key) }
+func (r *RapidStoreServer) RPop(key string) (any, error) { return r.SequenceManager.RPop(key) }
+func (r *RapidStoreServer) LRange(key string, start, stop int) ([]any, error) {
+	return r.SequenceManager.LRange(key, start, stop)
+}
+func (r *RapidStoreServer) Size(key string) uint { return r.SequenceManager.Size(key) }
+
+// SetManager methods
+func (r *RapidStoreServer) SAdd(key string, member any)      { r.SetM.SAdd(key, member) }
+func (r *RapidStoreServer) SMembers(key string) []any        { return r.SetM.SMembers(key) }
+func (r *RapidStoreServer) SRem(key string, member any) bool { return r.SetM.SRem(key, member) }
+func (r *RapidStoreServer) SIsMember(key string, member any) bool {
+	return r.SetM.SIsMember(key, member)
+}
+func (r *RapidStoreServer) SCard(key string) uint { return r.SetM.SCard(key) }
+
+// SortedSetManager methods
+func (r *RapidStoreServer) ZAdd(key string, score float64, member string) error {
+	return r.SortSetM.ZAdd(key, score, member)
+}
+func (r *RapidStoreServer) ZRemove(key string, member string) error {
+	return r.SortSetM.ZRemove(key, member)
+}
+func (r *RapidStoreServer) ZRange(key string, start, stop int, withScores bool) []any {
+	return r.SortSetM.ZRange(key, start, stop, withScores)
+}
+func (r *RapidStoreServer) ZRank(key string, member string) (int, bool) {
+	return r.SortSetM.ZRank(key, member)
+}
+func (r *RapidStoreServer) ZRevRank(key string, member string) (int, bool) {
+	return r.SortSetM.ZRevRank(key, member)
+}
+func (r *RapidStoreServer) ZScore(key string, member string) (float64, bool) {
+	return r.SortSetM.ZScore(key, member)
+}
+
+// UtilityManager methods
+func (r *RapidStoreServer) Info() <-chan server.ServerInfo { return r.Utility.Info() }
+func (r *RapidStoreServer) Monitor() <-chan string         { return r.Utility.Monitor() }
+func (r *RapidStoreServer) FlushDB() <-chan bool           { return r.Utility.FlushDB() }
+
+// LimitedStorage methods - route to KeyManager by default
+func (r *RapidStoreServer) CurrentSize() uint64 { return r.KeyManger.CurrentSize() }
+func (r *RapidStoreServer) Evict()              { r.KeyManger.Evict() }
+func (r *RapidStoreServer) Keys() []string      { return r.KeyManger.Keys() }
+
+/* ---------------------- Implements the KeyInterface --------------------- */
 type keyStore struct {
 	internalData map[string]GeneralValue
 	length       uint64
@@ -156,7 +321,7 @@ func (k *keyStore) ExpireKey(key string, duration time.Time) bool {
 func (k *keyStore) TTLKey(key string) (time.Duration, error) {
 	v, ok := k.internalData[key]
 	if !ok || !k.validKey(key, v) {
-		return time.Since(time.Now()), errors.New("key does not exist")
+		return time.Since(time.Now()), ErrKeyDoesNotExist
 	}
 	return time.Until(v.TTL), nil
 }
@@ -182,7 +347,7 @@ func (k *keyStore) Increment(key string) (int64, error) {
 
 	val := reflect.ValueOf(v.Value)
 	if !val.Type().ConvertibleTo(reflect.TypeOf(int64(0))) {
-		return 0, errors.New("value is not a numeric type")
+		return 0, ErrValueWrongType(int64(0), v.Value) // or handle error appropriately
 	}
 
 	// Convert to int64, increment, and store back
@@ -204,7 +369,7 @@ func (k *keyStore) Decrement(key string) (int64, error) {
 
 	val := reflect.ValueOf(v.Value)
 	if !val.Type().ConvertibleTo(reflect.TypeOf(int64(0))) {
-		return 0, fmt.Errorf("invalid value type for key %s", key) // or handle error appropriately
+		return 0, ErrValueWrongType(int64(0), val.Type()) // or handle error appropriately
 	}
 
 	// Convert to int64, decrement, and store back
@@ -226,7 +391,7 @@ func (k *keyStore) Append(key string, suffix string) error {
 
 	strVal, ok := v.Value.(string)
 	if !ok {
-		return errors.New("key is of invalid type") // or handle error appropriately
+		return ErrValueWrongType("string", v.Value) // or handle error appropriately
 	}
 
 	strVal += suffix
@@ -287,6 +452,7 @@ func NewKeyStore(maxSize uint64, policy string) KeyInterface {
 	}
 }
 
+/* ---------------------- Implements the HashTableManager Interface --------------------- */
 type FieldStore struct {
 	FieldData map[string]map[string]GeneralValue //key : {user:(value,ttl)} , name: alice , age: 30
 	length    uint64
@@ -322,7 +488,7 @@ func (f *FieldStore) HSet(key, field string, value any, TTL time.Duration) bool 
 func (f *FieldStore) HGet(key, field string) (any, error) { // get a field
 	v, ok := f.FieldData[key]
 	if !ok {
-		return nil, errors.New("key doesnt exist")
+		return nil, ErrKeyDoesNotExist
 	}
 	x, exist := v[field]
 	if !exist || !f.validKey(key, field, x) {
@@ -346,7 +512,6 @@ func (f *FieldStore) HGetAll(key string) map[string]any { // HGETALL
 func (f *FieldStore) HDel(key, field string) {
 	v, ok := f.FieldData[key]
 	if !ok || !f.validKey(key, field, v[field]) {
-		fmt.Printf("(HDEL):: key %s doesnt exist\n", key)
 		return
 	}
 	delete(v, field)
@@ -407,6 +572,7 @@ func NewFieldStore(maxSize uint64, policy string) HashTableManager {
 	}
 }
 
+/* ---------------------- Implements the ListManager Interface --------------------- */
 type OrderedListStore struct {
 	internalManager map[string]DS.SequenceStorage
 	policy          internal.EvictionPolicy
@@ -423,7 +589,7 @@ func NewOrderedListStore(maxSize uint64, policy string) *OrderedListStore {
 
 func (o *OrderedListStore) LPush(key string, value any) error {
 	if o.Size(key) >= uint(o.maxSize) {
-		return errors.New("list has reached its maximum size")
+		return ErrMaxSizeReached(o.maxSize)
 	}
 	v, ok := o.internalManager[key]
 	if !ok {
@@ -437,7 +603,7 @@ func (o *OrderedListStore) LPush(key string, value any) error {
 }
 func (o *OrderedListStore) RPush(key string, value any) error {
 	if o.Size(key) >= uint(o.maxSize) {
-		return errors.New("list has reached its maximum size")
+		return ErrMaxSizeReached(o.maxSize)
 	}
 	v, ok := o.internalManager[key]
 	if !ok {
@@ -452,11 +618,11 @@ func (o *OrderedListStore) RPush(key string, value any) error {
 func (o *OrderedListStore) LPop(key string) (any, error) {
 	v, ok := o.internalManager[key]
 	if !ok {
-		return nil, errors.New("key does not exist")
+		return nil, ErrKeyDoesNotExist
 	}
 	size := v.Size()
 	if size <= 0 {
-		return nil, errors.New("list is empty")
+		return nil, ErrStructureEmpty
 	}
 	nodeVal := v.PopHead().(*DS.Node)
 	return nodeVal.Value, nil
@@ -465,11 +631,11 @@ func (o *OrderedListStore) LPop(key string) (any, error) {
 func (o *OrderedListStore) RPop(key string) (any, error) {
 	v, ok := o.internalManager[key]
 	if !ok {
-		return nil, errors.New("key does not exist")
+		return nil, ErrKeyDoesNotExist
 	}
 	size := v.Size()
 	if size <= 0 {
-		return nil, errors.New("list is empty")
+		return nil, ErrStructureEmpty
 	}
 	nodeVal := v.PopTail().(*DS.Node)
 	return nodeVal.Value, nil
@@ -477,17 +643,16 @@ func (o *OrderedListStore) RPop(key string) (any, error) {
 func (o *OrderedListStore) LRange(key string, start, stop int) ([]any, error) {
 	v, ok := o.internalManager[key]
 	if !ok {
-		return nil, errors.New("key does not exist")
+		return nil, ErrKeyDoesNotExist
 	}
 	size := v.Size()
 	if size <= 0 {
-		return nil, errors.New("list is empty")
+		return nil, ErrStructureEmpty
 	}
 	if stop == -1 {
 		stop = int(size) - 1
 	}
 	rangeValues := v.Range(start, stop)
-	fmt.Printf("raw range values: %v\n", rangeValues)
 	var res []any
 	for i := range rangeValues {
 		nn := rangeValues[i].(*DS.Node)
@@ -520,6 +685,7 @@ func NewListManager(size uint64) ListManager {
 	return NewOrderedListStore(size, "no eviction")
 }
 
+/* ---------------------- Implements the SetManager Interface --------------------- */
 type UniqueSetStore struct {
 	internalManager map[string]map[interface{}]struct{}
 	policy          internal.EvictionPolicy
@@ -608,6 +774,7 @@ func NewSetManager(size uint64, policy string) SetManager {
 	return NewUniqueSetStore(size, policy)
 }
 
+/* ---------------------- Implements the UtilityManager Interface --------------------- */
 type CacheUtility struct {
 	infoChan    chan server.ServerInfo
 	commandChan chan string
@@ -634,6 +801,7 @@ func NewUtilityManger() UtilityManager {
 	return NewCacheUtility()
 }
 
+/* ---------------------- Implements the SortedSetManager Interface --------------------- */
 type SortedSetStore struct {
 	internalStore map[string]DS.BinaryTree[float64]
 	mbtoval       map[string]float64
@@ -782,6 +950,7 @@ func NewSortedSetManager(size uint64, policy string) SortedSetManager {
 	return newSortedSetStore(size, policy)
 }
 
+// ----------------------- Helper Functions -----------------------
 func topolicy(s string) int {
 	switch s {
 	case "no eviction":

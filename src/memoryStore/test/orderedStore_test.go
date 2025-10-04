@@ -206,3 +206,118 @@ func TestPopExhaustsListIntegration(t *testing.T) {
 		t.Errorf("expected error popping exhausted list")
 	}
 }
+
+// ------------------------- Large Intergration test of the entire interface -------------------------
+
+// 1. Push/Pop Ordering Integration
+// Ensures left/right pushes and pops maintain proper order like a deque.
+func TestPushPopOrderingIntegration(t *testing.T) {
+	store := newListStore()
+
+	// [1]
+	store.RPush("nums", 1)
+	// [1,2]
+	store.RPush("nums", 2)
+	// [0,1,2]
+	store.LPush("nums", 0)
+
+	// Now: [0,1,2]
+	val, _ := store.LPop("nums")
+	if val != 0 {
+		t.Errorf("expected 0 from LPop, got %v", val)
+	}
+
+	val, _ = store.RPop("nums")
+	if val != 2 {
+		t.Errorf("expected 2 from RPop, got %v", val)
+	}
+
+	// Remaining should be [1]
+	if s := store.Size("nums"); s != 1 {
+		t.Errorf("expected size=1, got %d", s)
+	}
+}
+
+// 2. LRange Bounds Integration
+// Ensures LRange handles ranges correctly, including going beyond list length.
+func TestLRangeBoundsIntegration(t *testing.T) {
+	store := newListStore()
+
+	for i := 1; i <= 5; i++ {
+		store.RPush("nums", i)
+	}
+	// list: [1,2,3,4,5]
+
+	res, err := store.LRange("nums", 1, 3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res) != 3 || res[0] != 2 || res[2] != 4 {
+		t.Errorf("expected [2 3 4], got %v", res)
+	}
+
+	// range beyond size
+	res, _ = store.LRange("nums", 0, 10)
+	if len(res) != 5 {
+		t.Errorf("expected full list length=5, got %d", len(res))
+	}
+}
+
+// 3. Multiple Keys Isolation Integration
+// Ensures different keys/lists are independent.
+func TestMultipleKeysIsolationIntegrationList(t *testing.T) {
+	store := newListStore()
+
+	store.RPush("nums", 1)
+	store.RPush("letters", "a")
+
+	val1, _ := store.LPop("nums")
+	if val1 != 1 {
+		t.Errorf("expected 1 from nums, got %v", val1)
+	}
+
+	val2, _ := store.LPop("letters")
+	if val2 != "a" {
+		t.Errorf("expected a from letters, got %v", val2)
+	}
+}
+
+// 4. Pop Exhaustion Integration
+// Ensures popping beyond list length returns an error and does not panic.
+func TestPopExhaustionIntegration(t *testing.T) {
+	store := newListStore()
+
+	store.RPush("nums", 10)
+	store.LPop("nums") // list empty
+
+	_, err := store.LPop("nums")
+	if err == nil {
+		t.Errorf("expected error when popping from empty list")
+	}
+
+	_, err = store.RPop("nums")
+	if err == nil {
+		t.Errorf("expected error when popping from empty list")
+	}
+}
+
+// 5. Edge Case: LPush on Empty, RPush then Range
+// Ensures first insert works from both ends and LRange works on single-item list.
+func TestSingleInsertAndRangeIntegration(t *testing.T) {
+	store := newListStore()
+
+	// Insert via LPush
+	store.LPush("nums", 99)
+
+	if s := store.Size("nums"); s != 1 {
+		t.Errorf("expected size=1, got %d", s)
+	}
+
+	res, err := store.LRange("nums", 0, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res) != 1 || res[0] != 99 {
+		t.Errorf("expected [99], got %v", res)
+	}
+}
