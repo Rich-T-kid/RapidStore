@@ -1,0 +1,27 @@
+{
+    "ServerConfig": {
+        "address": "127.0.0.1",
+        "port": 7000,
+        "health_check_port": 9000,
+        "max_clients": 500,
+        "timeout": "45s",
+        "idle_timeout": "600s"
+    },
+    "PersistenceConfig": {
+        "wal_sync_interval": "2s",
+        "wal_path": "./test_wal.log",
+        "wal_max_size": 5242880
+    },
+    "MonitoringConfig": {
+        "metrics_port": 8090,
+        "metrics_path": "/test/metrics",
+        "metrics_interval": "500ms",
+        "log_file": "./test.log"
+    },
+    "ElectionConfig": {
+        "zookeeper_servers": ["test1:2181", "test2:2181"],
+        "election_path": "/test/leader",
+        "node_id": "test-node-1",
+        "timeout": "10s"
+    }
+}

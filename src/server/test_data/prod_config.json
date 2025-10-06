@@ -1,0 +1,27 @@
+{
+    "ServerConfig": {
+        "address": "0.0.0.0",
+        "port": 8000,
+        "health_check_port": 8080,
+        "max_clients": 2000,
+        "timeout": "60s",
+        "idle_timeout": "900s"
+    },
+    "PersistenceConfig": {
+        "wal_sync_interval": "3s",
+        "wal_path": "./prod_wal.log",
+        "wal_max_size": 20971520
+    },
+    "MonitoringConfig": {
+        "metrics_port": 9191,
+        "metrics_path": "/prod/metrics",
+        "metrics_interval": "1s",
+        "log_file": "./prod.log"
+    },
+    "ElectionConfig": {
+        "zookeeper_servers": ["prod1:2181", "prod2:2181", "prod3:2181"],
+        "election_path": "/prod/leader",
+        "node_id": "prod-node-1",
+        "timeout": "15s"
+    }
+}

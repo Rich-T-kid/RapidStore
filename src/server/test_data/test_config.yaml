@@ -1,0 +1,23 @@
+ServerConfig:
+  address: "192.168.1.100"
+  port: 6500
+  health_check_port: 8500
+  max_clients: 750
+  timeout: "35s"
+  idle_timeout: "450s"
+PersistenceConfig:
+  wal_sync_interval: "1.5s"
+  wal_path: "./dev_wal.log"
+  wal_max_size: 8388608
+MonitoringConfig:
+  metrics_port: 9292
+  metrics_path: "/dev/metrics"
+  metrics_interval: "250ms"
+  log_file: "./dev.log"
+ElectionConfig:
+  zookeeper_servers:
+    - "dev1:2181"
+    - "dev2:2181"
+  election_path: "/dev/leader"
+  node_id: "dev-node-1"
+  timeout: "7s"
