@@ -121,15 +121,6 @@ type ServerConfig struct {
 	election    *ElectionConfig
 }
 
-// TODO: Delete was just needed for testing
-func (s *Server) ExposeConfig() map[string]interface{} {
-	return map[string]interface{}{
-		"pers": *s.config.persistence,
-		"mon":  *s.config.monitoring,
-		"elec": *s.config.election,
-	}
-}
-
 type PersistenceConfig struct {
 	WALSyncInterval time.Duration `json:"walsyncinterval" yml:"wal_sync_interval"` // how often to sync WAL to disk
 	WALPath         string        `json:"walpath" yml:"wal_path"`                  // path to WAL file
@@ -173,7 +164,7 @@ func defaultElectionConfig() *ElectionConfig {
 		live:             false,
 		ZookeeperServers: []string{"localhost:2181"},
 		ElectionPath:     "/rapidstore/leader",
-		NodeID:           "(TDB) remove and read from zookeeper", // TODO:
+		NodeID:           "(TDB) remove and read from zookeeper",
 		Timeout:          5 * time.Second,
 	}
 }

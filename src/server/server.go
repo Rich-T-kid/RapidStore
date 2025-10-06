@@ -273,8 +273,6 @@ func (s *Server) Stop() error {
 	return nil
 }
 func (s *Server) InterServerCommunications() {
-	// Need to define the protocol for health checks
-	//TODO: Implement health check listener & writer
 	addr := fmt.Sprintf("%s:%d", s.config.Address, s.config.HealthCheckPort)
 	fmt.Printf("Starting health check listener on %s\n", addr)
 	healthListener, err := net.Listen("tcp", addr)
@@ -312,8 +310,6 @@ func (s *Server) InterServerCommunications() {
 }
 
 func (s *Server) exportStats() {
-	// TODO: Should write out to metrics file || endpoin. not super important since theres no ingress @ the moment
-
 	http.HandleFunc(s.config.monitoring.MetricsPath, s.Metrics)
 	go func() {
 		var alreadyTried = false
