@@ -1,0 +1,27 @@
+{
+    "serverConfig": {
+        "address": "this should also propagate",
+        "port": 6379,
+        "health_check_port": 10001,
+        "max_clients": 10,
+        "timeout": "45s",
+        "idle_timeout": "600s"
+    },
+    "PersistanceConfig": {
+        "wal_sync_interval": "2s",
+        "wal_path": "./data/wal_segment.log",
+        "wal_max_size": 20971520
+    },
+    "MoniteringConfig": {
+        "metrics_port": 9100,
+        "metrics_path": "/system/metrics",
+        "metrics_interval": "1s",
+        "log_file": "./logs/rapidnode.log"
+    },
+    "ElectionConfig": {
+        "zookeeper_servers": ["127.0.0.1:2182", "127.0.0.1:2183"],
+        "election_path": "/rapidnode/leader",
+        "node_id": "node-2",
+        "timeout": "8s"
+    }
+}
