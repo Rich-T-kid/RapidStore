@@ -47,8 +47,28 @@ func (smd *ServerInfoMetaData) DecrementActiveConnections() {
 }
 
 var startTime = time.Now()
+var gcStatsCache atomic.Value
 
-func collectGcStats() (*GcStats, error) {
+// cachedGcStats holds both the stats and the timestamp when they were collected
+type cachedGcStats struct {
+	stats     *GcStats
+	timestamp time.Time
+}
+
+func (m *MonitoringConfig) collectGcStats() (*GcStats, error) {
+	var cacheDuration = m.MetricsInterval
+
+	// Check if we have cached data that's still valid
+	if cached := gcStatsCache.Load(); cached != nil {
+		if cachedData, ok := cached.(*cachedGcStats); ok {
+			if time.Since(cachedData.timestamp) < cacheDuration {
+				// Return cached data if it's less than 250ms old
+				return cachedData.stats, nil
+			}
+		}
+	}
+
+	// Cache miss or expired - collect new stats
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
 
@@ -71,6 +91,12 @@ func collectGcStats() (*GcStats, error) {
 		GCCPUFraction:  mem.GCCPUFraction,
 		Goroutines:     runtime.NumGoroutine(),
 	}
+
+	// Store in cache with current timestamp
+	gcStatsCache.Store(&cachedGcStats{
+		stats:     stats,
+		timestamp: time.Now(),
+	})
 
 	return stats, nil
 }
@@ -106,28 +132,23 @@ type MonitoringConfig struct {
 	MetricsPath     string
 	MetricsInterval time.Duration
 	LogFile         string
-
-	HealthCheckEnabled bool
-	HealthCheckPort    int
 }
 
 func defaultMonitoringConfig() *MonitoringConfig {
 	return &MonitoringConfig{
-		MetricsPort:        9090,
-		MetricsPath:        "/metrics",
-		MetricsInterval:    750 * time.Millisecond,
-		LogFile:            "./rapidstore.log",
-		HealthCheckEnabled: true,
-		HealthCheckPort:    8080,
+		MetricsPort:     9090,
+		MetricsPath:     "/metrics",
+		MetricsInterval: 750 * time.Millisecond,
+		LogFile:         "./rapidstore.log",
 	}
 }
 
 type ElectionConfig struct {
-	live             bool     // since we havnt incorporated elections yet this will just be a placeholder for now
-	ZookeeperServers []string // connection endpoints
-	ElectionPath     string   // e.g. "/service/leader"
-	NodeID           string   // unique identifier for this node
-	Timeout          time.Duration
+	live             bool          // since we havnt incorporated elections yet this will just be a placeholder for now
+	ZookeeperServers []string      // connection endpoints
+	ElectionPath     string        // e.g. "/service/leader"
+	NodeID           string        // unique identifier for this node
+	Timeout          time.Duration //heartbeat timeout try to keep relatively low so we know quickly if a node is down
 }
 
 func defaultElectionConfig() *ElectionConfig {

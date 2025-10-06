@@ -40,8 +40,6 @@ func TestServerConfigPropagation(t *testing.T) {
 		WithMetricsPort(8090),
 		WithMetricsPath("/custom-metrics"),
 		WithLogFile("/var/log/custom-rapidstore.log"),
-		WithHealthCheckEnabled(false),
-		WithHealthCheckPort(9080),
 
 		// Election configuration - individual fields
 		WithElectionEnabled(true),
@@ -114,13 +112,6 @@ func TestServerConfigPropagation(t *testing.T) {
 			t.Errorf("Expected LogFile to be '/var/log/custom-rapidstore.log', got '%s'", config.monitoring.LogFile)
 		}
 
-		if config.monitoring.HealthCheckEnabled != false {
-			t.Errorf("Expected HealthCheckEnabled to be false, got %t", config.monitoring.HealthCheckEnabled)
-		}
-
-		if config.monitoring.HealthCheckPort != 9080 {
-			t.Errorf("Expected HealthCheckPort to be 9080, got %d", config.monitoring.HealthCheckPort)
-		}
 	})
 
 	// Test election configuration
@@ -167,11 +158,9 @@ func TestServerConfigWithCompleteStructs(t *testing.T) {
 	}
 
 	customMonitoring := &MonitoringConfig{
-		MetricsPort:        7070,
-		MetricsPath:        "/struct-metrics",
-		LogFile:            "/struct/test/log.log",
-		HealthCheckEnabled: true,
-		HealthCheckPort:    7071,
+		MetricsPort: 7070,
+		MetricsPath: "/struct-metrics",
+		LogFile:     "/struct/test/log.log",
 	}
 
 	customElection := &ElectionConfig{

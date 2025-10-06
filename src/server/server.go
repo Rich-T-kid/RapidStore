@@ -2,9 +2,11 @@ package server
 
 import (
 	memorystore "RapidStore/memoryStore"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"strings"
 	"time"
 )
@@ -114,34 +116,6 @@ func WithLogFile(logFile string) serverOption {
 	}
 }
 
-func WithHealthCheck(enabled bool, port int) serverOption {
-	return func(s *ServerConfig) {
-		if s.monitoring == nil {
-			s.monitoring = defaultMonitoringConfig()
-		}
-		s.monitoring.HealthCheckEnabled = enabled
-		s.monitoring.HealthCheckPort = port
-	}
-}
-
-func WithHealthCheckEnabled(enabled bool) serverOption {
-	return func(s *ServerConfig) {
-		if s.monitoring == nil {
-			s.monitoring = defaultMonitoringConfig()
-		}
-		s.monitoring.HealthCheckEnabled = enabled
-	}
-}
-
-func WithHealthCheckPort(port int) serverOption {
-	return func(s *ServerConfig) {
-		if s.monitoring == nil {
-			s.monitoring = defaultMonitoringConfig()
-		}
-		s.monitoring.HealthCheckPort = port
-	}
-}
-
 // Election configuration options
 func WithElection(config *ElectionConfig) serverOption {
 	return func(s *ServerConfig) {
@@ -244,8 +218,10 @@ func (s *Server) Start() error {
 	// background goroutine
 	go func() {
 		s.isLive = true
-		s.healthChecks()
-		s.exportStats()
+		// used to talk to other servers , (Leaders, followers) for healthchecks, replication logs, ect.
+		go s.InterServerCommunications()
+		// expose metrics via http endpoint
+		go s.exportStats()
 		<-s.close
 		list.Close()
 	}()
@@ -296,27 +272,82 @@ func (s *Server) Stop() error {
 	fmt.Printf("Stopping server on %s:%d\n", s.config.Address, s.config.Port)
 	return nil
 }
-func (s *Server) healthChecks() {
+func (s *Server) InterServerCommunications() {
 	// Need to define the protocol for health checks
 	//TODO: Implement health check listener & writer
+	addr := fmt.Sprintf("%s:%d", s.config.Address, s.config.HealthCheckPort)
+	fmt.Printf("Starting health check listener on %s\n", addr)
+	healthListener, err := net.Listen("tcp", addr)
+	if err != nil {
+		fmt.Printf("Failed to start health check listener: %v\n", err)
+		return
+	}
+	defer healthListener.Close()
+	for {
+		conn, err := healthListener.Accept()
+		if err != nil {
+			select {
+			case <-s.close:
+				fmt.Printf("Health check listener stopped\n")
+				return
+			default:
+				if errors.Is(err, net.ErrClosed) {
+					fmt.Printf("Health check connection was closed: Now leaving\n")
+					return
+				}
+				fmt.Printf("Failed to accept health check connection: %v\n", err)
+				continue
+			}
+		}
+		go func(c net.Conn) {
+			defer c.Close()
+			status := "OK"
+			if !s.isLive {
+				status = "NOT OK"
+			}
+			c.Write([]byte(fmt.Sprintf("Health Status: %s\n", status)))
+		}(conn)
+	}
 
 }
 
 func (s *Server) exportStats() {
 	// TODO: Should write out to metrics file || endpoin. not super important since theres no ingress @ the moment
-	for s.isLive {
-		fmt.Printf("is live %v\n", s.isLive)
-		gcStats, err := collectGcStats()
-		if err != nil {
-			fmt.Printf("Error collecting GC stats: %v\n", err)
-			return
-		}
-		var _ = map[string]interface{}{
-			"timeStamp":  time.Now(),
-			"serverInfo": s.productionStats,
-			"gcStats":    *gcStats,
-		}
-		time.Sleep(s.config.monitoring.MetricsInterval)
 
+	http.HandleFunc(s.config.monitoring.MetricsPath, s.Metrics)
+	go func() {
+		var alreadyTried = false
+		for s.isLive {
+			endpoint := fmt.Sprintf(":%d", s.config.monitoring.MetricsPort)
+			fmt.Printf("Starting metrics server on %s\n", endpoint)
+			if err := http.ListenAndServe(endpoint, nil); err != nil {
+				fmt.Printf("Error starting metrics server: %v\n", err)
+			}
+			time.Sleep(s.config.timeout) // Retry after a delay if it fails
+			if alreadyTried {
+				fmt.Printf("Metrics server failed to start after retry, giving up: \n")
+				break // Avoid infinite retry loop
+			}
+			alreadyTried = true
+		}
+	}()
+}
+func (s *Server) Metrics(w http.ResponseWriter, r *http.Request) {
+	w.Header().Add("Content-Type", "application/json")
+	gcStats, err := s.config.monitoring.collectGcStats()
+	if err != nil {
+		fmt.Printf("Error collecting GC stats: %v\n", err)
+		return
 	}
+	var resp = map[string]interface{}{
+		"timeStamp":  time.Now(),
+		"serverInfo": s.productionStats,
+		"gcStats":    *gcStats,
+	}
+	jsonResp, err := json.Marshal(resp)
+	if err != nil {
+		http.Error(w, "Error generating JSON response", http.StatusInternalServerError)
+		return
+	}
+	w.Write(jsonResp)
 }
