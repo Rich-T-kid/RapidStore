@@ -69,11 +69,6 @@ func TestExistsKey(t *testing.T) {
 	}
 }
 
-// TODO: implement WatchKey
-func TestWatchKey(t *testing.T) {
-	t.Skip("Skipping WatchKey test for now")
-}
-
 func TestIncrement(t *testing.T) {
 	store := newTestStore()
 	val, err := store.Increment("counter")
@@ -129,6 +124,29 @@ func TestKeys(t *testing.T) {
 
 	if len(keys) != 2 {
 		t.Errorf("expected 2 keys, got %d", len(keys))
+	}
+}
+func TestType(t *testing.T) {
+	store := newTestStore()
+	store.SetKey("strKey", "hello")
+	store.SetKey("intKey", int64(42))
+	store.SetKey("floatKey", 3.14)
+	store.SetKey("boolKey", true)
+
+	if typ := store.Type("strKey"); typ != "string" {
+		t.Errorf("expected type 'string', got %s", typ)
+	}
+	if typ := store.Type("intKey"); typ != "integer" {
+		t.Errorf("expected type 'int', got %s", typ)
+	}
+	if typ := store.Type("floatKey"); typ != "float" {
+		t.Errorf("expected type 'float', got %s", typ)
+	}
+	if typ := store.Type("boolKey"); typ != "boolean" {
+		t.Errorf("expected type 'bool', got %s", typ)
+	}
+	if typ := store.Type("missingKey"); typ != "none" {
+		t.Errorf("expected type 'none' for missing key, got %s", typ)
 	}
 }
 

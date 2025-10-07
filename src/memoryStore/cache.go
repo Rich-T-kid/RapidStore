@@ -48,7 +48,7 @@ type KeyInterface interface {
 	ExpireKey(key string, duration time.Time) bool
 	TTLKey(key string) (time.Duration, error)
 	ExistsKey(key string) bool
-	WatchKey(key string) <-chan bool // notify when key is modified or deleted
+	Type(key string) string
 	Increment(key string) (int64, error)
 	Decrement(key string) (int64, error)
 	Append(key string, suffix string) error
@@ -188,8 +188,8 @@ func (r *RapidStoreServer) ExpireKey(key string, duration time.Time) bool {
 	return r.KeyManger.ExpireKey(key, duration)
 }
 func (r *RapidStoreServer) TTLKey(key string) (time.Duration, error) { return r.KeyManger.TTLKey(key) }
+func (r *RapidStoreServer) Type(key string) string                   { return r.KeyManger.Type(key) }
 func (r *RapidStoreServer) ExistsKey(key string) bool                { return r.KeyManger.ExistsKey(key) }
-func (r *RapidStoreServer) WatchKey(key string) <-chan bool          { return r.KeyManger.WatchKey(key) }
 func (r *RapidStoreServer) Increment(key string) (int64, error)      { return r.KeyManger.Increment(key) }
 func (r *RapidStoreServer) Decrement(key string) (int64, error)      { return r.KeyManger.Decrement(key) }
 func (r *RapidStoreServer) Append(key string, suffix string) error {
@@ -321,9 +321,28 @@ func (k *keyStore) ExistsKey(key string) bool {
 
 	return ok && k.validKey(key, k.internalData[key])
 }
-func (k *keyStore) WatchKey(key string) <-chan bool {
-	// TODO: needs other things to be implemented first
-	return nil
+func (k *keyStore) Type(key string) string {
+	v, ok := k.internalData[key]
+	if !ok || !k.validKey(key, v) {
+		return "none"
+	}
+	switch v.Value.(type) {
+	case string:
+		return "string"
+	case int, int8, int16, int32, int64:
+		return "integer"
+	case float32, float64:
+		return "float"
+	case bool:
+		return "boolean"
+	case []any:
+		return "list"
+	case map[string]any:
+		return "hash"
+	default:
+		var raw = reflect.ValueOf(v.Value)
+		return raw.String()
+	}
 }
 
 func (k *keyStore) Increment(key string) (int64, error) {
