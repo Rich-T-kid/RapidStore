@@ -209,12 +209,12 @@ func NewServer(options ...serverOption) *Server {
 func (s *Server) Start() error {
 	// Implementation to start the server
 	s.ramCache = memorystore.NewCache()
-	fmt.Printf("Starting server on %s:%d\n", s.config.Address, s.config.Port)
 	s.close = make(chan struct{})
 	list, err := net.Listen("tcp", fmt.Sprintf("%s:%d", s.config.Address, s.config.Port))
 	if err != nil {
 		return fmt.Errorf("failed to start server: %v", err)
 	}
+	fmt.Printf("Starting server on %s:%d\n", s.config.Address, s.config.Port)
 	// background goroutine
 	go func() {
 		s.isLive = true
@@ -251,20 +251,41 @@ func (s *Server) handleConnection(conn net.Conn) {
 	defer s.productionStats.DecrementActiveConnections()
 	// Handle client connection
 	fmt.Printf("Accepted connection from %s\n", conn.RemoteAddr().String())
-	buff := make([]byte, 1024)
-	n, err := conn.Read(buff)
-	if err != nil {
-		fmt.Printf("Error reading from connection: %v\n", err)
-		return
+
+	// Keep reading commands until connection is closed
+	for {
+		buff := make([]byte, 1024)
+		n, err := conn.Read(buff)
+		if err != nil {
+			fmt.Printf("Connection closed or error reading: %v\n", err)
+			return
+		}
+
+		parts := strings.Split(strings.TrimSpace(string(buff[:n])), " ")
+		base := parts[0]
+
+		if base == "Close" {
+			s.Stop()
+			return // Close this connection when server stops
+		} else if base == "PING" {
+			conn.Write([]byte("PONG\n"))
+		} else if strings.ToUpper(base) == "SET" && len(parts) >= 3 {
+			key := parts[1]
+			value := strings.Join(parts[2:], " ")
+			s.ramCache.SetKey(key, value)
+		} else if strings.ToUpper(base) == "GET" && len(parts) == 2 {
+			key := parts[1]
+			val := s.ramCache.GetKey(key)
+			if val == "" {
+				conn.Write([]byte("(nil)\n"))
+			} else {
+				conn.Write([]byte(fmt.Sprintf("%s\n", val)))
+			}
+		} else {
+			responseMsg := fmt.Sprintf("Echo: %s\n", strings.Join(parts, " "))
+			conn.Write([]byte(responseMsg))
+		}
 	}
-	msg := strings.TrimSpace(string(buff[:n]))
-	if msg == "Close" {
-		s.Stop()
-	} else {
-		responseMsg := fmt.Sprintf("Echo: %s\n", msg)
-		conn.Write([]byte(responseMsg))
-	}
-	// Here you would read commands from the connection and process them
 }
 func (s *Server) Stop() error {
 	s.isLive = false
@@ -273,8 +294,6 @@ func (s *Server) Stop() error {
 	return nil
 }
 func (s *Server) InterServerCommunications() {
-	// Need to define the protocol for health checks
-	//TODO: Implement health check listener & writer
 	addr := fmt.Sprintf("%s:%d", s.config.Address, s.config.HealthCheckPort)
 	fmt.Printf("Starting health check listener on %s\n", addr)
 	healthListener, err := net.Listen("tcp", addr)
@@ -312,8 +331,6 @@ func (s *Server) InterServerCommunications() {
 }
 
 func (s *Server) exportStats() {
-	// TODO: Should write out to metrics file || endpoin. not super important since theres no ingress @ the moment
-
 	http.HandleFunc(s.config.monitoring.MetricsPath, s.Metrics)
 	go func() {
 		var alreadyTried = false
