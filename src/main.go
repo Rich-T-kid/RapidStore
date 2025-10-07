@@ -2,9 +2,10 @@ package main
 
 import (
 	"RapidStore/server"
+	"fmt"
 )
 
 func main() {
-	_ = server.NewServer()
+	fmt.Printf("%v\n", server.NewServer().Start())
 
 }
