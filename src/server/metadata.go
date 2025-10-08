@@ -16,6 +16,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type internalServerMSg string
+
+const (
+	restartCacheServer  internalServerMSg = "restart_leader_stream" //
+	restartLeaderStream internalServerMSg = "restart_leader_stream" //
+)
+
 // Metadata holds server metadata information.
 type ServerInfoMetaData struct {
 	WriteOps          uint64  `json:"write_ops"`          // total write operations
@@ -152,25 +159,40 @@ func defaultMonitoringConfig() *MonitoringConfig {
 	}
 }
 
+type leaderInfo struct {
+	Address string
+	Port    string
+}
 type ElectionConfig struct {
-	isLeader         bool
-	followerChan     chan zk.Event
-	zkConn           *zk.Conn
-	ZookeeperServers []string      `json:"zookeeperservers" yml:"zookeeper_servers"` // connection endpoints
-	ElectionPath     string        `json:"electionpath" yml:"election_path"`         // e.g. "/service/leader"
-	NodeID           string        `json:"nodeid" yml:"node_id"`                     // unique identifier for this node
-	Timeout          time.Duration `json:"timeout" yml:"timeout"`                    //heartbeat timeout try to keep relatively low so we know quickly if a node is down
+	isLeader            bool
+	zkPredecessorEvents <-chan zk.Event
+	zkLeaderEvents      <-chan zk.Event
+	zkConn              *zk.Conn
+	ZookeeperServers    []string      `json:"zookeeperservers" yml:"zookeeper_servers"` // connection endpoints
+	ElectionPath        string        `json:"electionpath" yml:"election_path"`         // e.g. "/service/leader"
+	NodeID              string        `json:"nodeid" yml:"node_id"`                     // unique identifier for this node
+	Timeout             time.Duration `json:"timeout" yml:"timeout"`                    //heartbeat timeout try to keep relatively low so we know quickly if a node is down
+	leaderInfo          leaderInfo
 }
 
+func (e *ElectionConfig) updateLeaderInfo(addr string, port string) {
+	e.leaderInfo = leaderInfo{
+		Address: addr,
+		Port:    port,
+	}
+}
 func defaultElectionConfig() *ElectionConfig {
+	// TODO: make env variable or config driven
+	const zooKeeperServer = "136.112.251.137:2181"
 	return &ElectionConfig{
-		isLeader:         false,
-		followerChan:     make(chan zk.Event),
-		zkConn:           nil,
-		ZookeeperServers: []string{"localhost:2181"},
-		ElectionPath:     "/rapidstore/leader",
-		NodeID:           "(TDB) remove and read from zookeeper",
-		Timeout:          5 * time.Second,
+		isLeader:            false,
+		zkPredecessorEvents: make(chan zk.Event),
+		zkLeaderEvents:      make(chan zk.Event),
+		zkConn:              nil,
+		ZookeeperServers:    []string{zooKeeperServer},
+		ElectionPath:        "/rapidstore/leader",
+		NodeID:              "(TDB) remove and read from zookeeper",
+		Timeout:             5 * time.Second,
 	}
 }
 
