@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/go-zookeeper/zk"
 	"github.com/shirou/gopsutil/cpu"
 	"gopkg.in/yaml.v3"
 )
@@ -152,7 +153,9 @@ func defaultMonitoringConfig() *MonitoringConfig {
 }
 
 type ElectionConfig struct {
-	live             bool
+	isLeader         bool
+	followerChan     chan zk.Event
+	zkConn           *zk.Conn
 	ZookeeperServers []string      `json:"zookeeperservers" yml:"zookeeper_servers"` // connection endpoints
 	ElectionPath     string        `json:"electionpath" yml:"election_path"`         // e.g. "/service/leader"
 	NodeID           string        `json:"nodeid" yml:"node_id"`                     // unique identifier for this node
@@ -161,7 +164,9 @@ type ElectionConfig struct {
 
 func defaultElectionConfig() *ElectionConfig {
 	return &ElectionConfig{
-		live:             false,
+		isLeader:         false,
+		followerChan:     make(chan zk.Event),
+		zkConn:           nil,
 		ZookeeperServers: []string{"localhost:2181"},
 		ElectionPath:     "/rapidstore/leader",
 		NodeID:           "(TDB) remove and read from zookeeper",

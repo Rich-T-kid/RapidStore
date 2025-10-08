@@ -123,15 +123,6 @@ func WithElection(config *ElectionConfig) serverOption {
 	}
 }
 
-func WithElectionEnabled(enabled bool) serverOption {
-	return func(s *ServerConfig) {
-		if s.election == nil {
-			s.election = defaultElectionConfig()
-		}
-		s.election.live = enabled
-	}
-}
-
 func WithZookeeperServers(servers []string) serverOption {
 	return func(s *ServerConfig) {
 		if s.election == nil {
@@ -199,12 +190,18 @@ func NewServer(options ...serverOption) *Server {
 		option(config)
 	}
 
-	return &Server{
+	var s = &Server{
 		config:   config,
 		ramCache: memorystore.NewCache(),
 		close:    make(chan struct{}),
 		isLive:   false,
 	}
+	err := s.initLeader()
+	if err != nil {
+		panic(fmt.Sprintf("Error initializing leader election: %v\n", err))
+	}
+	fmt.Printf("server is the leader : %v\n", s.config.election.isLeader)
+	return s
 }
 func (s *Server) Start() error {
 	// Implementation to start the server

@@ -27,7 +27,6 @@ func TestServerConfigPropagation(t *testing.T) {
 		WithLogFile("/var/log/custom-rapidstore.log"),
 
 		// Election configuration - individual fields
-		WithElectionEnabled(true),
 		WithZookeeperServers([]string{"zk1:2181", "zk2:2181", "zk3:2181"}),
 		WithElectionPath("/custom/rapidstore/leader"),
 		WithNodeID("test-node-123"),
@@ -105,10 +104,6 @@ func TestServerConfigPropagation(t *testing.T) {
 			t.Fatal("Expected election config to be initialized, got nil")
 		}
 
-		if config.election.live != true {
-			t.Errorf("Expected election live to be true, got %t", config.election.live)
-		}
-
 		expectedServers := []string{"zk1:2181", "zk2:2181", "zk3:2181"}
 		if len(config.election.ZookeeperServers) != len(expectedServers) {
 			t.Errorf("Expected %d zookeeper servers, got %d", len(expectedServers), len(config.election.ZookeeperServers))
@@ -149,7 +144,6 @@ func TestServerConfigWithCompleteStructs(t *testing.T) {
 	}
 
 	customElection := &ElectionConfig{
-		live:             false,
 		ZookeeperServers: []string{"struct-zk:2181"},
 		ElectionPath:     "/struct/test/leader",
 		NodeID:           "struct-test-node",
@@ -191,9 +185,6 @@ func TestServerConfigWithCompleteStructs(t *testing.T) {
 			t.Error("Expected election config to be the exact same struct instance")
 		}
 
-		if config.election.live != false {
-			t.Errorf("Expected election live to be false, got %t", config.election.live)
-		}
 	})
 }
 

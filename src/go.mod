@@ -3,6 +3,7 @@ module RapidStore
 go 1.25.0
 
 require (
+	github.com/go-zookeeper/zk v1.0.4
 	github.com/shirou/gopsutil v3.21.11+incompatible
 	golang.org/x/exp v0.0.0-20251002181428-27f1f14c8bb9
 	gopkg.in/yaml.v3 v3.0.1
