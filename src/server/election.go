@@ -278,7 +278,7 @@ func (s *Server) watchZoo() {
 					globalLogger.Error("error handling new election", zap.Error(err))
 				}
 			case zk.EventNotWatching:
-				fmt.Println("Predecessor watch stopped - restarting watch")
+				globalLogger.Info("Predecessor watch stopped - restarting watch")
 				// Need to restart the watch
 			default:
 				globalLogger.Debug("Unhandled predecessor event type", zap.String("eventType", event.Type.String()), zap.String("eventTypeRaw", fmt.Sprintf("%v", event.Type)))
