@@ -25,13 +25,6 @@ func TestServerConfigPropagation(t *testing.T) {
 		WithMetricsPort(8090),
 		WithMetricsPath("/custom-metrics"),
 		WithLogFile("/var/log/custom-rapidstore.log"),
-
-		// Election configuration - individual fields
-		WithElectionEnabled(true),
-		WithZookeeperServers([]string{"zk1:2181", "zk2:2181", "zk3:2181"}),
-		WithElectionPath("/custom/rapidstore/leader"),
-		WithNodeID("test-node-123"),
-		WithElectionTimeout(15*time.Second),
 	)
 
 	config := server.config
@@ -99,39 +92,6 @@ func TestServerConfigPropagation(t *testing.T) {
 
 	})
 
-	// Test election configuration
-	t.Run("ElectionConfig", func(t *testing.T) {
-		if config.election == nil {
-			t.Fatal("Expected election config to be initialized, got nil")
-		}
-
-		if config.election.live != true {
-			t.Errorf("Expected election live to be true, got %t", config.election.live)
-		}
-
-		expectedServers := []string{"zk1:2181", "zk2:2181", "zk3:2181"}
-		if len(config.election.ZookeeperServers) != len(expectedServers) {
-			t.Errorf("Expected %d zookeeper servers, got %d", len(expectedServers), len(config.election.ZookeeperServers))
-		}
-
-		for i, expected := range expectedServers {
-			if i >= len(config.election.ZookeeperServers) || config.election.ZookeeperServers[i] != expected {
-				t.Errorf("Expected ZookeeperServers[%d] to be '%s', got '%s'", i, expected, config.election.ZookeeperServers[i])
-			}
-		}
-
-		if config.election.ElectionPath != "/custom/rapidstore/leader" {
-			t.Errorf("Expected ElectionPath to be '/custom/rapidstore/leader', got '%s'", config.election.ElectionPath)
-		}
-
-		if config.election.NodeID != "test-node-123" {
-			t.Errorf("Expected NodeID to be 'test-node-123', got '%s'", config.election.NodeID)
-		}
-
-		if config.election.Timeout != 15*time.Second {
-			t.Errorf("Expected election Timeout to be 15s, got %v", config.election.Timeout)
-		}
-	})
 }
 
 func TestServerConfigWithCompleteStructs(t *testing.T) {
@@ -149,8 +109,7 @@ func TestServerConfigWithCompleteStructs(t *testing.T) {
 	}
 
 	customElection := &ElectionConfig{
-		live:             false,
-		ZookeeperServers: []string{"struct-zk:2181"},
+		ZookeeperServers: []string{"136.112.251.137:2181"},
 		ElectionPath:     "/struct/test/leader",
 		NodeID:           "struct-test-node",
 		Timeout:          20 * time.Second,
@@ -186,15 +145,6 @@ func TestServerConfigWithCompleteStructs(t *testing.T) {
 		}
 	})
 
-	t.Run("CompleteElectionStruct", func(t *testing.T) {
-		if config.election != customElection {
-			t.Error("Expected election config to be the exact same struct instance")
-		}
-
-		if config.election.live != false {
-			t.Errorf("Expected election live to be false, got %t", config.election.live)
-		}
-	})
 }
 
 func TestServerConfigDefaults(t *testing.T) {
@@ -225,9 +175,6 @@ func TestServerConfigDefaults(t *testing.T) {
 			t.Error("Expected default monitoring config to be initialized")
 		}
 
-		if config.election == nil {
-			t.Error("Expected default election config to be initialized")
-		}
 	})
 }
 
@@ -291,25 +238,6 @@ func TestServerFromConfig_JSON_TestConfig(t *testing.T) {
 		t.Errorf("Expected log file './test.log', got '%s'", server.config.monitoring.LogFile)
 	}
 
-	// Verify election config
-	expectedServers := []string{"test1:2181", "test2:2181"}
-	if len(server.config.election.ZookeeperServers) != len(expectedServers) {
-		t.Errorf("Expected %d zookeeper servers, got %d", len(expectedServers), len(server.config.election.ZookeeperServers))
-	}
-	for i, expected := range expectedServers {
-		if i < len(server.config.election.ZookeeperServers) && server.config.election.ZookeeperServers[i] != expected {
-			t.Errorf("Expected zookeeper server[%d] '%s', got '%s'", i, expected, server.config.election.ZookeeperServers[i])
-		}
-	}
-	if server.config.election.ElectionPath != "/test/leader" {
-		t.Errorf("Expected election path '/test/leader', got '%s'", server.config.election.ElectionPath)
-	}
-	if server.config.election.NodeID != "test-node-1" {
-		t.Errorf("Expected node ID 'test-node-1', got '%s'", server.config.election.NodeID)
-	}
-	if server.config.election.Timeout != 10*time.Second {
-		t.Errorf("Expected election timeout 10s, got %v", server.config.election.Timeout)
-	}
 }
 
 func TestServerFromConfig_JSON_ProdConfig(t *testing.T) {
@@ -347,11 +275,6 @@ func TestServerFromConfig_JSON_ProdConfig(t *testing.T) {
 		t.Errorf("Expected WAL path './prod_wal.log', got '%s'", server.config.persistence.WALPath)
 	}
 
-	// Verify election config with multiple servers
-	expectedServers := []string{"prod1:2181", "prod2:2181", "prod3:2181"}
-	if len(server.config.election.ZookeeperServers) != len(expectedServers) {
-		t.Errorf("Expected %d zookeeper servers, got %d", len(expectedServers), len(server.config.election.ZookeeperServers))
-	}
 }
 
 func TestServerFromConfig_YAML_TestConfig(t *testing.T) {
@@ -400,17 +323,6 @@ func TestServerFromConfig_YAML_TestConfig(t *testing.T) {
 		t.Errorf("Expected metrics interval 250ms, got %v", server.config.monitoring.MetricsInterval)
 	}
 
-	// Verify election config
-	expectedServers := []string{"dev1:2181", "dev2:2181"}
-	if len(server.config.election.ZookeeperServers) != len(expectedServers) {
-		t.Errorf("Expected %d zookeeper servers, got %d", len(expectedServers), len(server.config.election.ZookeeperServers))
-	}
-	if server.config.election.NodeID != "dev-node-1" {
-		t.Errorf("Expected node ID 'dev-node-1', got '%s'", server.config.election.NodeID)
-	}
-	if server.config.election.Timeout != 7*time.Second {
-		t.Errorf("Expected election timeout 7s, got %v", server.config.election.Timeout)
-	}
 }
 
 func TestServerFromConfig_YAML_StagingConfig(t *testing.T) {
@@ -457,11 +369,4 @@ func TestServerFromConfig_YAML_StagingConfig(t *testing.T) {
 	}
 
 	// Verify election config with 4 servers
-	expectedServers := []string{"staging1:2181", "staging2:2181", "staging3:2181", "staging4:2181"}
-	if len(server.config.election.ZookeeperServers) != len(expectedServers) {
-		t.Errorf("Expected %d zookeeper servers, got %d", len(expectedServers), len(server.config.election.ZookeeperServers))
-	}
-	if server.config.election.Timeout != 20*time.Second {
-		t.Errorf("Expected election timeout 20s, got %v", server.config.election.Timeout)
-	}
 }

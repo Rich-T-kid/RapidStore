@@ -123,15 +123,6 @@ func WithElection(config *ElectionConfig) serverOption {
 	}
 }
 
-func WithElectionEnabled(enabled bool) serverOption {
-	return func(s *ServerConfig) {
-		if s.election == nil {
-			s.election = defaultElectionConfig()
-		}
-		s.election.live = enabled
-	}
-}
-
 func WithZookeeperServers(servers []string) serverOption {
 	return func(s *ServerConfig) {
 		if s.election == nil {
@@ -174,7 +165,7 @@ func defeaultServerConfig() *ServerConfig {
 		HealthCheckPort: 8080,
 		MaxClients:      1000,
 		timeout:         0,
-		idleTimeout:     300 * time.Second,
+		idleTimeout:     20 * time.Second,
 		persistence:     defaultPersistenceConfig(),
 		monitoring:      defaultMonitoringConfig(),
 		election:        defaultElectionConfig(),
@@ -184,6 +175,7 @@ func defeaultServerConfig() *ServerConfig {
 type Server struct {
 	config          *ServerConfig
 	productionStats ServerInfoMetaData
+	dynamicMessage  chan internalServerMSg
 	// other fields like listener, handlers, etc.
 	ramCache memorystore.Cache
 	close    chan struct{}
@@ -199,12 +191,19 @@ func NewServer(options ...serverOption) *Server {
 		option(config)
 	}
 
-	return &Server{
-		config:   config,
-		ramCache: memorystore.NewCache(),
-		close:    make(chan struct{}),
-		isLive:   false,
+	var s = &Server{
+		config:         config,
+		ramCache:       memorystore.NewCache(),
+		dynamicMessage: make(chan internalServerMSg, 1), // Buffered channel to avoid blocking
+		close:          make(chan struct{}),
+		isLive:         false,
 	}
+	err := s.initLeader()
+	if err != nil {
+		panic(fmt.Sprintf("Error initializing leader election: %v\n", err))
+	}
+	fmt.Printf("server is the leader : %v\n", s.config.election.isLeader)
+	return s
 }
 func (s *Server) Start() error {
 	// Implementation to start the server
@@ -290,44 +289,95 @@ func (s *Server) handleConnection(conn net.Conn) {
 func (s *Server) Stop() error {
 	s.isLive = false
 	s.close <- struct{}{}
+	s.config.election.zkConn.Close()
 	fmt.Printf("Stopping server on %s:%d\n", s.config.Address, s.config.Port)
 	return nil
 }
 func (s *Server) InterServerCommunications() {
-	addr := fmt.Sprintf("%s:%d", s.config.Address, s.config.HealthCheckPort)
-	fmt.Printf("Starting health check listener on %s\n", addr)
-	healthListener, err := net.Listen("tcp", addr)
-	if err != nil {
-		fmt.Printf("Failed to start health check listener: %v\n", err)
-		return
-	}
-	defer healthListener.Close()
+	var isFirstTime = true
+	var currentConnection chan struct{} // To track running connection
+
 	for {
-		conn, err := healthListener.Accept()
+		select {
+		case msg := <-s.dynamicMessage:
+			if msg == restartLeaderStream {
+				fmt.Println("Restarting InterServer connection due to leader change")
+				// Stop current connection if running
+				if currentConnection != nil {
+					close(currentConnection)
+				}
+				// Start new connection with updated leader info
+				currentConnection = s.startInterServerConnection()
+			}
+		case <-s.close:
+			fmt.Println("InterServer communications stopped")
+			if currentConnection != nil {
+				close(currentConnection)
+			}
+			return
+		case <-time.After(s.config.idleTimeout):
+			// First time setup
+			if isFirstTime {
+				fmt.Println("Starting InterServer communications for first time")
+				currentConnection = s.startInterServerConnection()
+				isFirstTime = false
+			}
+			// Small sleep to prevent busy waiting
+			time.Sleep(s.config.idleTimeout)
+		}
+	}
+}
+
+func (s *Server) startInterServerConnection() chan struct{} {
+	stopSignal := make(chan struct{})
+
+	go func() {
+		addr := fmt.Sprintf("%s:%s", s.config.election.leaderInfo.Address, s.config.election.leaderInfo.Port)
+		fmt.Printf("Starting health check listener on %s\n", addr)
+
+		healthListener, err := net.Listen("tcp", addr)
 		if err != nil {
+			fmt.Printf("Failed to start health check listener: %v\n", err)
+			return
+		}
+		defer healthListener.Close()
+
+		for {
 			select {
-			case <-s.close:
-				fmt.Printf("Health check listener stopped\n")
+			case <-stopSignal:
+				fmt.Println("Stopping InterServer connection")
 				return
 			default:
-				if errors.Is(err, net.ErrClosed) {
-					fmt.Printf("Health check connection was closed: Now leaving\n")
-					return
+				// Set a timeout for Accept to make it non-blocking
+				healthListener.(*net.TCPListener).SetDeadline(time.Now().Add(1 * time.Second))
+
+				conn, err := healthListener.Accept()
+				if err != nil {
+					// Check if it's a timeout (normal) or real error
+					if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+						continue // Just a timeout, continue checking for stop signal
+					}
+					if errors.Is(err, net.ErrClosed) {
+						return
+					}
+					fmt.Printf("Failed to accept connection: %v\n", err)
+					continue
 				}
-				fmt.Printf("Failed to accept health check connection: %v\n", err)
-				continue
+
+				// Handle the connection
+				go func(c net.Conn) {
+					defer c.Close()
+					status := "OK"
+					if !s.isLive {
+						status = "NOT OK"
+					}
+					c.Write([]byte(fmt.Sprintf("Health Status: %s\n", status)))
+				}(conn)
 			}
 		}
-		go func(c net.Conn) {
-			defer c.Close()
-			status := "OK"
-			if !s.isLive {
-				status = "NOT OK"
-			}
-			c.Write([]byte(fmt.Sprintf("Health Status: %s\n", status)))
-		}(conn)
-	}
+	}()
 
+	return stopSignal
 }
 
 func (s *Server) exportStats() {

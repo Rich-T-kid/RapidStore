@@ -7,5 +7,4 @@ import (
 
 func main() {
 	fmt.Printf("%v\n", server.NewServer().Start())
-
 }
