@@ -3,8 +3,9 @@ package main
 import (
 	"RapidStore/server"
 	"fmt"
+	//"go.uber.org/zap"
 )
 
 func main() {
-	fmt.Printf("%v\n", server.NewServer().Start())
+	fmt.Println(server.NewServer().Start())
 }

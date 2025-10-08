@@ -9,7 +9,45 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
+
+var globalLogger *zap.Logger
+
+func init() {
+	// TODO: for now this is a basic setup, later we can make it configurable
+
+	config := zap.Config{
+		Level:       zap.NewAtomicLevelAt(zap.InfoLevel),
+		Development: false,
+		Encoding:    "json",
+		EncoderConfig: zapcore.EncoderConfig{
+			TimeKey:       "timeStamp",
+			LevelKey:      "level",
+			MessageKey:    "message",
+			CallerKey:     "source Code",
+			StacktraceKey: "stacktrace",
+			LineEnding:    zapcore.DefaultLineEnding,
+
+			EncodeLevel: zapcore.CapitalLevelEncoder,
+			EncodeTime: func(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
+				enc.AppendString(t.Format("2006-01-02 15:04:05"))
+			},
+			EncodeDuration: zapcore.MillisDurationEncoder,
+			EncodeCaller:   zapcore.ShortCallerEncoder,
+			EncodeName:     zapcore.FullNameEncoder,
+		},
+		OutputPaths:      []string{"stdout", "server.log"},
+		ErrorOutputPaths: []string{"stderr"},
+	}
+	logger, err := config.Build()
+	if err != nil {
+		panic(fmt.Sprintf("Failed to initialize logger: %v", err))
+	}
+	globalLogger = logger
+}
 
 type serverOption = func(s *ServerConfig)
 
@@ -202,7 +240,8 @@ func NewServer(options ...serverOption) *Server {
 	if err != nil {
 		panic(fmt.Sprintf("Error initializing leader election: %v\n", err))
 	}
-	fmt.Printf("server is the leader : %v\n", s.config.election.isLeader)
+	connAddr := fmt.Sprintf("%s:%d", s.config.Address, s.config.Port)
+	globalLogger.Info("Server init config:", zap.String("address", connAddr))
 	return s
 }
 func (s *Server) Start() error {
@@ -213,7 +252,8 @@ func (s *Server) Start() error {
 	if err != nil {
 		return fmt.Errorf("failed to start server: %v", err)
 	}
-	fmt.Printf("Starting server on %s:%d\n", s.config.Address, s.config.Port)
+	connAddr := fmt.Sprintf("%s:%d", s.config.Address, s.config.Port)
+	globalLogger.Info("Starting server on", zap.String("address", connAddr))
 	// background goroutine
 	go func() {
 		s.isLive = true
@@ -229,15 +269,15 @@ func (s *Server) Start() error {
 		if err != nil {
 			select {
 			case <-s.close:
-				fmt.Printf("Server stopped accepting new connections\n")
+				globalLogger.Info("Server stopped accepting new connections")
 				return nil
 			default:
 				// Check if it's a network operation error (likely listener closed)
 				if errors.Is(err, net.ErrClosed) {
-					fmt.Printf("Connection was closed: Now leaving\n")
+					globalLogger.Info("Connection was closed: Now leaving")
 					return nil
 				}
-				fmt.Printf("Failed to accept connection: %v\n", err)
+				globalLogger.Warn("Failed to accept connection", zap.Error(err))
 				continue
 			}
 		}
@@ -249,14 +289,14 @@ func (s *Server) handleConnection(conn net.Conn) {
 	defer conn.Close()
 	defer s.productionStats.DecrementActiveConnections()
 	// Handle client connection
-	fmt.Printf("Accepted connection from %s\n", conn.RemoteAddr().String())
+	globalLogger.Info("Accepted connection from", zap.String("remoteAddr", conn.RemoteAddr().String()))
 
 	// Keep reading commands until connection is closed
 	for {
 		buff := make([]byte, 1024)
 		n, err := conn.Read(buff)
 		if err != nil {
-			fmt.Printf("Connection closed or error reading: %v\n", err)
+			globalLogger.Warn("(cache Server) Connection closed or error reading", zap.Error(err))
 			return
 		}
 
@@ -290,7 +330,7 @@ func (s *Server) Stop() error {
 	s.isLive = false
 	s.close <- struct{}{}
 	s.config.election.zkConn.Close()
-	fmt.Printf("Stopping server on %s:%d\n", s.config.Address, s.config.Port)
+	globalLogger.Info("Stopping server on", zap.String("address", fmt.Sprintf("%s:%d", s.config.Address, s.config.Port)))
 	return nil
 }
 func (s *Server) InterServerCommunications() {
@@ -301,7 +341,7 @@ func (s *Server) InterServerCommunications() {
 		select {
 		case msg := <-s.dynamicMessage:
 			if msg == restartLeaderStream {
-				fmt.Println("Restarting InterServer connection due to leader change")
+				globalLogger.Debug("Received message to restart InterServer connection due to leader change")
 				// Stop current connection if running
 				if currentConnection != nil {
 					close(currentConnection)
@@ -310,7 +350,7 @@ func (s *Server) InterServerCommunications() {
 				currentConnection = s.startInterServerConnection()
 			}
 		case <-s.close:
-			fmt.Println("InterServer communications stopped")
+			globalLogger.Debug("InterServer communications stopped")
 			if currentConnection != nil {
 				close(currentConnection)
 			}
@@ -318,7 +358,7 @@ func (s *Server) InterServerCommunications() {
 		case <-time.After(s.config.idleTimeout):
 			// First time setup
 			if isFirstTime {
-				fmt.Println("Starting InterServer communications for first time")
+				globalLogger.Debug("Starting InterServer communications for first time")
 				currentConnection = s.startInterServerConnection()
 				isFirstTime = false
 			}
@@ -333,11 +373,11 @@ func (s *Server) startInterServerConnection() chan struct{} {
 
 	go func() {
 		addr := fmt.Sprintf("%s:%s", s.config.election.leaderInfo.Address, s.config.election.leaderInfo.Port)
-		fmt.Printf("Starting health check listener on %s\n", addr)
+		globalLogger.Info("Starting health check listener on", zap.String("address", addr))
 
 		healthListener, err := net.Listen("tcp", addr)
 		if err != nil {
-			fmt.Printf("Failed to start health check listener: %v\n", err)
+			globalLogger.Warn("Failed to start health check listener", zap.Error(err))
 			return
 		}
 		defer healthListener.Close()
@@ -345,7 +385,7 @@ func (s *Server) startInterServerConnection() chan struct{} {
 		for {
 			select {
 			case <-stopSignal:
-				fmt.Println("Stopping InterServer connection")
+				globalLogger.Debug("Stopping InterServer connection")
 				return
 			default:
 				// Set a timeout for Accept to make it non-blocking
@@ -360,7 +400,7 @@ func (s *Server) startInterServerConnection() chan struct{} {
 					if errors.Is(err, net.ErrClosed) {
 						return
 					}
-					fmt.Printf("Failed to accept connection: %v\n", err)
+					globalLogger.Warn("(Inter Server Communications) Failed to accept connection", zap.Error(err))
 					continue
 				}
 
@@ -386,13 +426,13 @@ func (s *Server) exportStats() {
 		var alreadyTried = false
 		for s.isLive {
 			endpoint := fmt.Sprintf(":%d", s.config.monitoring.MetricsPort)
-			fmt.Printf("Starting metrics server on %s\n", endpoint)
+			globalLogger.Info("Starting metrics server on", zap.String("endpoint", endpoint))
 			if err := http.ListenAndServe(endpoint, nil); err != nil {
-				fmt.Printf("Error starting metrics server: %v\n", err)
+				globalLogger.Warn("Error starting metrics server", zap.Error(err))
 			}
 			time.Sleep(s.config.timeout) // Retry after a delay if it fails
 			if alreadyTried {
-				fmt.Printf("Metrics server failed to start after retry, giving up: \n")
+				globalLogger.Debug("Metrics server failed to start after retry, giving up")
 				break // Avoid infinite retry loop
 			}
 			alreadyTried = true
@@ -403,7 +443,7 @@ func (s *Server) Metrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Content-Type", "application/json")
 	gcStats, err := s.config.monitoring.collectGcStats()
 	if err != nil {
-		fmt.Printf("Error collecting GC stats: %v\n", err)
+		globalLogger.Error("Error collecting GC stats", zap.Error(err))
 		return
 	}
 	var resp = map[string]interface{}{
@@ -413,6 +453,7 @@ func (s *Server) Metrics(w http.ResponseWriter, r *http.Request) {
 	}
 	jsonResp, err := json.Marshal(resp)
 	if err != nil {
+		globalLogger.Error("Error generating JSON response", zap.Error(err))
 		http.Error(w, "Error generating JSON response", http.StatusInternalServerError)
 		return
 	}
