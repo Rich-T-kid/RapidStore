@@ -236,7 +236,6 @@ func serverConfigFromJson(r io.Reader, c *ServerConfig) (ServerConfig, error) {
 		ElectionConfig    map[string]interface{} `json:"ElectionConfig"`
 	}
 
-	fmt.Printf("Peristance %+#v\n", outerConfig.PersistenceConfig)
 	// Parse the JSON
 	decoder := json.NewDecoder(r)
 	if err := decoder.Decode(&outerConfig); err != nil {

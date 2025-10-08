@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/go-zookeeper/zk"
+	"go.uber.org/zap"
 )
 
 const (
@@ -54,7 +55,7 @@ func (s *Server) initLeader() error {
 	if err != nil {
 		return fmt.Errorf("failed to create node: %w", err)
 	}
-	fmt.Printf("Created node at path: %s\n", path)
+	globalLogger.Debug("Created node at path", zap.String("path", path))
 
 	// Retry getting children with a small delay to handle timing issues
 	var children []string
@@ -68,7 +69,7 @@ func (s *Server) initLeader() error {
 			break
 		}
 
-		fmt.Printf("No children found, retrying... (attempt %d/3)\n", i+1)
+		globalLogger.Debug("No children found, retrying...", zap.Int("attempt", i+1))
 		time.Sleep(100 * time.Millisecond)
 	}
 
@@ -96,10 +97,10 @@ func (s *Server) initLeader() error {
 	pathParts := strings.Split(path, "/")
 	myNodeName := pathParts[len(pathParts)-1]
 	s.config.election.NodeID = myNodeName
-	fmt.Printf("My node name: %s, Leader node name: %s\n", myNodeName, electedLeader)
+	globalLogger.Debug("Node ID set", zap.String("nodeID", myNodeName), zap.String("electedLeader", electedLeader))
 
 	if myNodeName == electedLeader {
-		fmt.Printf("You were elected leader\n")
+		globalLogger.Info("You were elected leader")
 		s.config.election.isLeader = true
 		// create /leader dir (if not exist) and place IP:port of self in it
 		leaderData := []byte(fmt.Sprintf("%s:%d", s.config.Address, s.config.Port))
@@ -121,7 +122,7 @@ func (s *Server) initLeader() error {
 		}
 		// nodes are ephemeral so no need to delete
 	} else {
-		fmt.Printf("You are a follower. Leader is: %s\n", electedLeader)
+		globalLogger.Debug("You are a follower", zap.String("leader", electedLeader))
 		s.config.election.isLeader = false
 		// Register as follower - create ephemeral sequential node under /followers
 		followerData := []byte(fmt.Sprintf("%s:%d", s.config.Address, s.config.Port))
@@ -145,7 +146,7 @@ func (s *Server) initLeader() error {
 			return fmt.Errorf("failed to create follower node: %w", err)
 		}
 
-		fmt.Printf("Registered as follower at: %s\n", followerNode)
+		globalLogger.Debug("Registered as follower", zap.String("followerNode", followerNode))
 		if pos-1 >= 0 && pos-1 < len(children) {
 			// watch the node just before us
 			_, stat, predW, err := zkConn.GetW(electionPath + "/" + children[pos-1])
@@ -157,7 +158,7 @@ func (s *Server) initLeader() error {
 			}
 			// watch the leader for events
 			electedLeaderPath := fmt.Sprintf("%s/%s", electionPath, electedLeader)
-			fmt.Printf("Elected leader path: %s\n", electedLeaderPath)
+			globalLogger.Debug("Elected leader path", zap.String("path", electedLeaderPath))
 			_, _, leaderW, err := zkConn.GetW(electedLeaderPath)
 			if err != nil {
 				if err == zk.ErrNoNode {
@@ -165,8 +166,7 @@ func (s *Server) initLeader() error {
 				}
 				return fmt.Errorf("failed to set watch on leader node: %w", err)
 			}
-
-			fmt.Printf("Watching predecessor node: %s with version %d\n", children[pos-1], stat.Version)
+			globalLogger.Debug("Watching predecessor node", zap.String("predecessor", children[pos-1]), zap.Int32("version", stat.Version))
 			s.config.election.zkPredecessorEvents = predW
 			s.config.election.zkLeaderEvents = leaderW
 			go s.watchZoo()
@@ -177,7 +177,7 @@ func (s *Server) initLeader() error {
 }
 
 func (s *Server) newElection() error {
-	fmt.Println("Starting new election process")
+	globalLogger.Info("Starting new election process")
 
 	zkConn := s.config.election.zkConn
 	if zkConn == nil {
@@ -198,10 +198,10 @@ func (s *Server) newElection() error {
 	electedLeader := children[0]
 	myNodeName := s.config.election.NodeID
 
-	fmt.Printf("Leader: %s, My node: %s\n", electedLeader, myNodeName)
+	globalLogger.Info("Leader elected", zap.String("leader", electedLeader), zap.String("myNode", myNodeName))
 
 	if myNodeName == electedLeader {
-		fmt.Println("I am the new leader!")
+		globalLogger.Info("I am the new leader!")
 		s.config.election.isLeader = true
 
 		// Update leader path
@@ -221,7 +221,7 @@ func (s *Server) newElection() error {
 		}
 
 	} else {
-		fmt.Printf("I am a follower. Leader: %s\n", electedLeader)
+		globalLogger.Info("I am a follower!", zap.String("leader", electedLeader), zap.String("myNode", myNodeName))
 		s.config.election.isLeader = false
 
 		// Find my index and watch predecessor
@@ -261,7 +261,7 @@ func (s *Server) newElection() error {
 func (s *Server) watchZoo() {
 	// leader node doesnt have a predecessor to watch
 	for {
-		fmt.Printf("In watchZoo loop, isLive: %v, isLeader: %v\n", s.isLive, s.config.election.isLeader)
+		globalLogger.Debug("In watchZoo loop", zap.Bool("isLive", s.isLive), zap.Bool("isLeader", s.config.election.isLeader))
 		time.Sleep(s.config.election.Timeout)
 		if !s.isLive || s.config.election.isLeader {
 			break
@@ -269,37 +269,35 @@ func (s *Server) watchZoo() {
 		// TODO: if we ever want to watch the leader for what ever reason
 		select {
 		case event := <-s.config.election.zkPredecessorEvents:
-			fmt.Printf(
-				"(1) Received event from predecessor: %s (type: %v)\n", event.Type.String(), event.Type,
-			)
+			globalLogger.Debug("Received event from predecessor", zap.String("eventType", event.Type.String()), zap.String("eventTypeRaw", fmt.Sprintf("%v", event.Type)))
 			switch event.Type {
 			case zk.EventNodeDeleted:
-				fmt.Println("Predecessor deleted - starting new election")
+				globalLogger.Info("Predecessor deleted - starting new election")
 				err := s.newElection()
 				if err != nil {
-					fmt.Printf("error handling new election %v\n", err)
+					globalLogger.Error("error handling new election", zap.Error(err))
 				}
 			case zk.EventNotWatching:
 				fmt.Println("Predecessor watch stopped - restarting watch")
 				// Need to restart the watch
 			default:
-				fmt.Printf("Unhandled predecessor event type: %v\n", event.Type)
+				globalLogger.Debug("Unhandled predecessor event type", zap.String("eventType", event.Type.String()), zap.String("eventTypeRaw", fmt.Sprintf("%v", event.Type)))
 			}
 		case event := <-s.config.election.zkLeaderEvents:
-			fmt.Printf("(2) Received event from leader: %s (type: %v)\n", event.Type.String(), event.Type)
+			globalLogger.Debug("Received event from leader", zap.String("eventType", event.Type.String()), zap.String("eventTypeRaw", fmt.Sprintf("%v", event.Type)))
 			switch event.Type {
 			case zk.EventNodeDeleted:
-				fmt.Println("Leader deleted - starting new election")
+				globalLogger.Info("Leader deleted - starting new election")
 				err := s.newElection()
 				if err != nil {
-					fmt.Printf("error handling new election %v\n", err)
+					globalLogger.Error("error handling new election", zap.Error(err))
 				}
 			case zk.EventNodeDataChanged:
-				fmt.Println("Leader data changed - updating leader info")
+				globalLogger.Info("Leader data changed - updating leader info")
 				// just re-read the leader info
 				data, _, err := s.config.election.zkConn.Get(leaderPath)
 				if err != nil {
-					fmt.Printf("Failed to read leader data: %v\n", err)
+					globalLogger.Error("error reading leader data", zap.Error(err))
 					return
 				}
 
@@ -307,24 +305,24 @@ func (s *Server) watchZoo() {
 				leaderInfo := string(data)
 				parts := strings.Split(leaderInfo, ":")
 				if len(parts) != 2 {
-					fmt.Printf("Invalid leader data format: %s\n", leaderInfo)
+					globalLogger.Debug("Invalid leader data format", zap.String("leaderInfo", leaderInfo))
 					return
 				}
 
 				addr := parts[0]
 				port := parts[1]
-				fmt.Printf("Leader updated to: %s:%s\n", addr, port)
+				globalLogger.Debug("Leader updated", zap.String("addr", addr), zap.String("port", port))
 				s.config.election.updateLeaderInfo(addr, port)
 				s.dynamicMessage <- restartLeaderStream
 			case zk.EventNotWatching:
-				fmt.Println("Leader watch stopped - restarting watch")
+				globalLogger.Info("Leader watch stopped - restarting watch")
 				// Need to restart the watch
 			default:
-				fmt.Printf("Unhandled leader event type: %v\n", event.Type)
+				globalLogger.Debug("Unhandled leader event type", zap.String("eventType", event.Type.String()), zap.String("eventTypeRaw", fmt.Sprintf("%v", event.Type)))
 			}
 
 		default:
-			fmt.Printf("No events received, continuing...\n")
+			globalLogger.Info("No events received, continuing...")
 		}
 	}
 }
