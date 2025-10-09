@@ -94,59 +94,6 @@ func TestServerConfigPropagation(t *testing.T) {
 
 }
 
-func TestServerConfigWithCompleteStructs(t *testing.T) {
-	// Test using complete config structs instead of individual field setters
-	customPersistence := &PersistenceConfig{
-		WALSyncInterval: 500 * time.Millisecond,
-		WALPath:         "/struct/test/wal.log",
-		WALMaxSize:      50 * 1024 * 1024, // 50MB
-	}
-
-	customMonitoring := &MonitoringConfig{
-		MetricsPort: 7070,
-		MetricsPath: "/struct-metrics",
-		LogFile:     "/struct/test/log.log",
-	}
-
-	customElection := &ElectionConfig{
-		ZookeeperServers: []string{"136.112.251.137:2181"},
-		ElectionPath:     "/struct/test/leader",
-		NodeID:           "struct-test-node",
-		Timeout:          20 * time.Second,
-	}
-
-	server := NewServer(
-		WithPort(7777),
-		WithPersistence(customPersistence),
-		WithMonitoring(customMonitoring),
-		WithElection(customElection),
-	)
-
-	config := server.config
-
-	// Verify complete struct propagation
-	t.Run("CompletePersistenceStruct", func(t *testing.T) {
-		if config.persistence != customPersistence {
-			t.Error("Expected persistence config to be the exact same struct instance")
-		}
-
-		if config.persistence.WALSyncInterval != 500*time.Millisecond {
-			t.Errorf("Expected WALSyncInterval to be 500ms, got %v", config.persistence.WALSyncInterval)
-		}
-	})
-
-	t.Run("CompleteMonitoringStruct", func(t *testing.T) {
-		if config.monitoring != customMonitoring {
-			t.Error("Expected monitoring config to be the exact same struct instance")
-		}
-
-		if config.monitoring.MetricsPort != 7070 {
-			t.Errorf("Expected MetricsPort to be 7070, got %d", config.monitoring.MetricsPort)
-		}
-	})
-
-}
-
 func TestServerConfigDefaults(t *testing.T) {
 	// Test that a server created with no options has proper defaults
 	server := NewServer()

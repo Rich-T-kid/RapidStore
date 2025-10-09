@@ -1,0 +1,31 @@
+FROM golang:latest
+
+WORKDIR /app
+
+COPY . .
+RUN go mod tidy
+RUN go build -o main .
+
+EXPOSE 8888
+
+
+CMD ["./main"]
+
+
+# Create or use buildx builder
+#docker buildx create --use --name RapidStoreRouter || docker buildx use RapidStoreRouter
+
+# Build and push multi-platform image
+#docker buildx build --no-cache --platform linux/amd64,linux/arm64 -t rich329/rapid-instance-router:v0.0.1 --push .
+
+# Pull the image
+#docker pull rich329/rapid-instance-router:v0.0.1
+
+# Run the router container 
+#docker run -d -p 8888:8888 --name rapid-instance-router rich329/rapid-instance-router:v0.0.1
+
+# Remove container
+#docker rm -f rapid-instance-router
+
+# Build local image
+#docker build -t rich329/rapid-instance-router:v0.0.1 .
