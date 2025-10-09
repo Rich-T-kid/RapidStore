@@ -24,7 +24,7 @@ const (
 
 // read from zoo keeper and such
 func (s *Server) initLeader() error {
-	zkConn, _, err := zk.Connect(s.config.election.ZookeeperServers, s.config.election.Timeout)
+	zkConn, _, err := zk.Connect(s.config.election.ZookeeperServers, s.config.election.connTimeout)
 	if err != nil {
 		return err
 	}

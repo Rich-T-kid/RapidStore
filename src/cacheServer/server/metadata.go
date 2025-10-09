@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -169,6 +168,7 @@ type leaderInfo struct {
 	Port    string
 }
 type ElectionConfig struct {
+	connTimeout         time.Duration
 	isLeader            bool
 	zkPredecessorEvents <-chan zk.Event
 	zkLeaderEvents      <-chan zk.Event
@@ -188,9 +188,10 @@ func (e *ElectionConfig) updateLeaderInfo(addr string, port string) {
 }
 func defaultElectionConfig() *ElectionConfig {
 	// TODO: make env variable or config driven
-	var zooKeeperServer = os.Getenv(zooKeeperENV)
+	var zooKeeperServer = "34.27.188.202:2181"
 
 	return &ElectionConfig{
+		connTimeout:         1500 * time.Millisecond,
 		isLeader:            false,
 		zkPredecessorEvents: make(chan zk.Event),
 		zkLeaderEvents:      make(chan zk.Event),
@@ -198,7 +199,7 @@ func defaultElectionConfig() *ElectionConfig {
 		ZookeeperServers:    []string{zooKeeperServer},
 		ElectionPath:        "/rapidstore/leader", // pretty sure this is never used TODO: delete later after checjing
 		NodeID:              "(TDB) remove and read from zookeeper",
-		Timeout:             5 * time.Second,
+		Timeout:             450 * time.Millisecond,
 	}
 }
 

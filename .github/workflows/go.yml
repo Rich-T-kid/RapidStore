@@ -29,5 +29,5 @@ jobs:
 
     - name: Test
       run: |
-        cd src
+        cd src/cacheServer
         go test -v ./...
