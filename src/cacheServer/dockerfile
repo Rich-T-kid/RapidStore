@@ -18,10 +18,10 @@ CMD ["./main"]
 
 
 #docker buildx create --use --name RapidStore || docker buildx use Rapidbuilder-instance
-#docker buildx build --no-cache --platform linux/amd64,linux/arm64 -t rich329/rapid-instance:v0.0.1 --push .
+#docker buildx build --no-cache --platform linux/amd64,linux/arm64 -t rich329/rapid-instance:v0.0.2 --push .
 
 # docker pull rich329/rapid-instance:v0.0.1
-# docker run -d -p 6380:6380 -p 8080:8080 -p 9090:9090 --name rapid-instance rich329/rapid-instance:v0.0.1
+# docker run -d -p 6380:6380 -p 8080:8080 -p 9090:9090 --name rapid-instance rich329/rapid-instance:v0.0.2
 
 # docker rm -f rapid-instance
 # docker build -t rich329/rapid-instance:v0.0.1 .

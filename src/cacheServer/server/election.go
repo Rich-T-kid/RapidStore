@@ -3,6 +3,9 @@ package server
 import (
 	"errors"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -99,11 +102,16 @@ func (s *Server) initLeader() error {
 	s.config.election.NodeID = myNodeName
 	globalLogger.Debug("Node ID set", zap.String("nodeID", myNodeName), zap.String("electedLeader", electedLeader))
 
+	nodeAddr, err := getExternalIP()
+	if err != nil {
+		return fmt.Errorf("failed to get external IP: %w", err)
+	}
+
 	if myNodeName == electedLeader {
 		globalLogger.Info("You were elected leader")
 		s.config.election.isLeader = true
 		// create /leader dir (if not exist) and place IP:port of self in it
-		leaderData := []byte(fmt.Sprintf("%s:%d", s.config.Address, s.config.Port))
+		leaderData := []byte(fmt.Sprintf("%s:%d", nodeAddr, s.config.Port))
 		exist, _, err = zkConn.Exists(leaderPath)
 		if err != nil {
 			return fmt.Errorf("failed to check if leader path exists: %w", err)
@@ -125,7 +133,7 @@ func (s *Server) initLeader() error {
 		globalLogger.Debug("You are a follower", zap.String("leader", electedLeader))
 		s.config.election.isLeader = false
 		// Register as follower - create ephemeral sequential node under /followers
-		followerData := []byte(fmt.Sprintf("%s:%d", s.config.Address, s.config.Port))
+		followerData := []byte(fmt.Sprintf("%s:%d", nodeAddr, s.config.Port))
 
 		// Ensure follower path exists first
 		exist, _, err := zkConn.Exists(followerPath)
@@ -200,12 +208,16 @@ func (s *Server) newElection() error {
 
 	globalLogger.Info("Leader elected", zap.String("leader", electedLeader), zap.String("myNode", myNodeName))
 
+	nodeAddr, err := getExternalIP()
+	if err != nil {
+		return fmt.Errorf("failed to get external IP: %w", err)
+	}
 	if myNodeName == electedLeader {
 		globalLogger.Info("I am the new leader!")
 		s.config.election.isLeader = true
 
 		// Update leader path
-		leaderData := []byte(fmt.Sprintf("%s:%d", s.config.Address, s.config.Port))
+		leaderData := []byte(fmt.Sprintf("%s:%d", nodeAddr, s.config.Port))
 		exist, _, err := zkConn.Exists(leaderPath)
 		if err != nil {
 			panic(fmt.Sprintf("Failed to check leader path: %v", err))
@@ -325,4 +337,33 @@ func (s *Server) watchZoo() {
 			globalLogger.Info("No events received, continuing...")
 		}
 	}
+}
+
+func getExternalIP() (string, error) {
+	services := []string{
+		"https://api.ipify.org",
+		"https://icanhazip.com",
+		"https://ipecho.net/plain",
+		"https://myexternalip.com/raw",
+	}
+
+	for _, service := range services {
+		resp, err := http.Get(service)
+		if err != nil {
+			continue
+		}
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			continue
+		}
+
+		ip := strings.TrimSpace(string(body))
+		if net.ParseIP(ip) != nil {
+			return ip, nil
+		}
+	}
+
+	return "", fmt.Errorf("failed to get external IP from any service")
 }

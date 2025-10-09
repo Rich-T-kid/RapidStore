@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/joho/godotenv"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -18,6 +19,10 @@ var globalLogger *zap.Logger
 
 func init() {
 	// TODO: for now this is a basic setup, later we can make it configurable
+	err := godotenv.Load() // load .env file if present
+	if err != nil {
+		panic(fmt.Sprintf("Error loading .env file: %v", err))
+	}
 
 	config := zap.Config{
 		Level:       zap.NewAtomicLevelAt(zap.InfoLevel),

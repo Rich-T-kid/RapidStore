@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -17,6 +18,10 @@ import (
 )
 
 type internalServerMSg string
+
+const (
+	zooKeeperENV = "ZOOKEEPERADDR"
+)
 
 const (
 	restartCacheServer  internalServerMSg = "restart_leader_stream" //
@@ -183,14 +188,15 @@ func (e *ElectionConfig) updateLeaderInfo(addr string, port string) {
 }
 func defaultElectionConfig() *ElectionConfig {
 	// TODO: make env variable or config driven
-	const zooKeeperServer = "136.112.251.137:2181"
+	var zooKeeperServer = os.Getenv(zooKeeperENV)
+
 	return &ElectionConfig{
 		isLeader:            false,
 		zkPredecessorEvents: make(chan zk.Event),
 		zkLeaderEvents:      make(chan zk.Event),
 		zkConn:              nil,
 		ZookeeperServers:    []string{zooKeeperServer},
-		ElectionPath:        "/rapidstore/leader",
+		ElectionPath:        "/rapidstore/leader", // pretty sure this is never used TODO: delete later after checjing
 		NodeID:              "(TDB) remove and read from zookeeper",
 		Timeout:             5 * time.Second,
 	}
