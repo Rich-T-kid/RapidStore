@@ -188,10 +188,10 @@ func (e *ElectionConfig) updateLeaderInfo(addr string, port string) {
 }
 func defaultElectionConfig() *ElectionConfig {
 	// TODO: make env variable or config driven
-	var zooKeeperServer = "34.27.188.202:2181"
+	var zooKeeperServer = "35.222.157.12:2181"
 
 	return &ElectionConfig{
-		connTimeout:         1500 * time.Millisecond,
+		connTimeout:         2500 * time.Millisecond,
 		isLeader:            false,
 		zkPredecessorEvents: make(chan zk.Event),
 		zkLeaderEvents:      make(chan zk.Event),
@@ -199,7 +199,7 @@ func defaultElectionConfig() *ElectionConfig {
 		ZookeeperServers:    []string{zooKeeperServer},
 		ElectionPath:        "/rapidstore/leader", // pretty sure this is never used TODO: delete later after checjing
 		NodeID:              "(TDB) remove and read from zookeeper",
-		Timeout:             450 * time.Millisecond,
+		Timeout:             500 * time.Millisecond,
 	}
 }
 

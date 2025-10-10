@@ -216,6 +216,13 @@ func (s *Server) newElection() error {
 		globalLogger.Info("I am the new leader!")
 		s.config.election.isLeader = true
 
+		nodeData := fmt.Sprintf("%s:%d", nodeAddr, s.config.Port)
+		// Remove this node from followers since it's now the leader
+		err := s.removeFollowerNode(nodeData, followerPath)
+		if err != nil {
+			globalLogger.Error("error removing follower node", zap.Error(err))
+			// continue, not a huge deal if we cant remove it
+		}
 		// Update leader path
 		leaderData := []byte(fmt.Sprintf("%s:%d", nodeAddr, s.config.Port))
 		exist, _, err := zkConn.Exists(leaderPath)
@@ -273,7 +280,7 @@ func (s *Server) newElection() error {
 func (s *Server) watchZoo() {
 	// leader node doesnt have a predecessor to watch
 	for {
-		globalLogger.Debug("In watchZoo loop", zap.Bool("isLive", s.isLive), zap.Bool("isLeader", s.config.election.isLeader))
+		globalLogger.Debug("In watchZoo loop", zap.Bool("isLive", s.isLive), zap.Bool("isLeader", s.config.election.isLeader), zap.Float64("timeout duration seconds", s.config.election.Timeout.Seconds()))
 		time.Sleep(s.config.election.Timeout)
 		if !s.isLive || s.config.election.isLeader {
 			break
@@ -337,6 +344,43 @@ func (s *Server) watchZoo() {
 			globalLogger.Info("No events received, continuing...")
 		}
 	}
+}
+
+func (s *Server) removeFollowerNode(nodeData string, path string) error {
+	zkConn := s.config.election.zkConn
+	if zkConn == nil {
+		return errors.New("ZooKeeper connection is nil")
+	}
+
+	children, _, err := zkConn.Children(path)
+	if err != nil {
+		return fmt.Errorf("failed to get follower children: %w", err)
+	}
+
+	for _, child := range children {
+		childPath := fmt.Sprintf("%s/%s", path, child)
+		data, _, err := zkConn.Get(childPath)
+		if err != nil {
+			if err == zk.ErrNoNode {
+				continue // Node might have been deleted already
+			}
+			return fmt.Errorf("failed to get follower node data: %w", err)
+		}
+
+		if string(data) == nodeData {
+			err = zkConn.Delete(childPath, -1)
+			if err != nil {
+				if err == zk.ErrNoNode {
+					return nil // Node already deleted
+				}
+				return fmt.Errorf("failed to delete follower node: %w", err)
+			}
+			globalLogger.Info("Removed follower node", zap.String("nodePath", childPath))
+			return nil
+		}
+	}
+
+	return fmt.Errorf("follower node with data %s not found", nodeData)
 }
 
 func getExternalIP() (string, error) {
