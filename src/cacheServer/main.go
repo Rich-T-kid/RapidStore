@@ -5,6 +5,10 @@ import (
 	"fmt"
 )
 
+var unusedport = 9321
+
 func main() {
-	fmt.Println(server.NewServer().Start())
+	fmt.Println(server.NewServer(
+		server.WithPort(unusedport + 51),
+	).Start())
 }

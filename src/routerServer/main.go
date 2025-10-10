@@ -13,6 +13,7 @@ import (
 	"github.com/go-zookeeper/zk"
 	"github.com/joho/godotenv"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 func init() {
@@ -22,7 +23,34 @@ func init() {
 		fmt.Printf("Error loading .env file: %v\n", err)
 	}
 	// Initialize logger
-	logger, _ = zap.NewProduction()
+	config := zap.Config{
+		Level:       zap.NewAtomicLevelAt(zap.DebugLevel), // Show debug messages
+		Development: false,
+		Encoding:    "json",
+		EncoderConfig: zapcore.EncoderConfig{
+			TimeKey:       "timeStamp",
+			LevelKey:      "level",
+			MessageKey:    "message",
+			CallerKey:     "source Code",
+			StacktraceKey: "stacktrace",
+			LineEnding:    zapcore.DefaultLineEnding,
+
+			EncodeLevel: zapcore.CapitalLevelEncoder,
+			EncodeTime: func(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
+				enc.AppendString(t.Format("2006-01-02 15:04:05"))
+			},
+			EncodeDuration: zapcore.MillisDurationEncoder,
+			EncodeCaller:   zapcore.ShortCallerEncoder,
+			EncodeName:     zapcore.FullNameEncoder,
+		},
+		OutputPaths:      []string{"stdout", "server.log"},
+		ErrorOutputPaths: []string{"stderr"},
+	}
+	l, err := config.Build()
+	if err != nil {
+		panic(fmt.Sprintf("Failed to initialize logger: %v", err))
+	}
+	logger = l
 }
 
 var (
@@ -41,16 +69,15 @@ type serverInfo struct {
 	Port string
 }
 type routerServer struct {
-	exposePort         int
-	leaderAddr         string
-	leaderPort         string
-	followers          []serverInfo
-	leaderUpdateChan   <-chan zk.Event // listen for updates/deletes from /leader chan
-	followerUpdateChan <-chan zk.Event // listen for updates/deletes from /follower chan
-	zooManager         *zk.Conn
-	isLive             bool
-	closer             func() // close the listener
-	sync.RWMutex              // used to lock reads when the leader or followers are being updated
+	exposePort           int
+	leaderAddr           string
+	leaderPort           string
+	followers            []serverInfo
+	rapidStoreUpdateChan <-chan zk.Event
+	zooManager           *zk.Conn
+	isLive               bool
+	closer               func() // close the listener
+	sync.RWMutex                // used to lock reads when the leader or followers are being updated
 }
 
 func (r *routerServer) handleConnection(conn net.Conn) {
@@ -58,7 +85,7 @@ func (r *routerServer) handleConnection(conn net.Conn) {
 	buffer := make([]byte, 1024)
 	n, err := conn.Read(buffer)
 	if err != nil {
-		fmt.Println("error reading from connection ", err)
+		logger.Error("error reading from connection", zap.Error(err))
 		return
 	}
 	request := string(buffer[:n])
@@ -68,7 +95,11 @@ func (r *routerServer) handleConnection(conn net.Conn) {
 		conn.Write([]byte(response))
 	}
 	if strings.HasPrefix(strings.ToUpper(request), "SET") { // write operation -> leader
-		resp, err := r.requestCacheServer(r.leaderAddr, r.leaderPort, buffer[:n])
+		r.RWMutex.RLock() // in case it gets updated while reading
+		var addr = r.leaderAddr
+		var port = r.leaderPort
+		r.RWMutex.RUnlock()
+		resp, err := r.requestCacheServer(addr, port, buffer[:n])
 		if err != nil {
 			conn.Write([]byte(fmt.Sprintf("Error routing to leader: %v\n", err)))
 			return
@@ -94,7 +125,7 @@ func (r *routerServer) handleConnection(conn net.Conn) {
 	if strings.HasPrefix(strings.ToUpper(request), "STOP") {
 		r.isLive = false
 		go func() {
-			time.Sleep(time.Second * 1) // give it a second to send the shutdown message
+			time.Sleep(time.Millisecond * 500) // give it a second to send the shutdown message
 			r.closer()
 		}()
 		conn.Write([]byte("Router server shutting down...\n"))
@@ -102,10 +133,9 @@ func (r *routerServer) handleConnection(conn net.Conn) {
 	}
 }
 
-// TODO: this needs to be updated when we develop the protocol more
 func (r *routerServer) requestCacheServer(addr string, port string, payload []byte) ([]byte, error) {
 	if addr == "" || port == "" {
-		return nil, fmt.Errorf("invalid address or port for cache server")
+		return nil, fmt.Errorf("invalid address or port for cache server (addr: '%s', port: '%s')", addr, port)
 	}
 	path := fmt.Sprintf("%s:%s", addr, port)
 	conn, err := net.Dial("tcp", path)
@@ -113,18 +143,18 @@ func (r *routerServer) requestCacheServer(addr string, port string, payload []by
 		return nil, fmt.Errorf("failed to connect to cache server at %s: %w", path, err)
 	}
 	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(2 * time.Second)) // Set a timeout for the operation
+	conn.SetDeadline(time.Now().Add(5 * time.Second)) // Set a timeout for the operation
 
 	_, err = conn.Write(payload)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request to cache server at %s: %w", path, err)
 	}
 
-	response := make([]byte, 4096*4) // Adjust buffer size as needed
+	response := make([]byte, 4096*4) // Adjust buffer
 	n, err := conn.Read(response)
 	if err != nil {
 		if err == io.EOF {
-			return response[:n], nil // Return what was read before EOF
+			return response[:n], nil
 		}
 		return nil, fmt.Errorf("failed to read response from cache server at %s: %w", path, err)
 	}
@@ -132,36 +162,68 @@ func (r *routerServer) requestCacheServer(addr string, port string, payload []by
 	return response[:n], nil
 }
 
-// TODO: race condition with a follower that gets promoted to leader is still presnt in the follower list. which is fine lowkey since it will just handler read
-func (r *routerServer) listenForLeaderChanges() {
+func (r *routerServer) listenForChanges() {
 	for r.isLive {
 		select {
-		case event, ok := <-r.leaderUpdateChan:
+		case <-time.After(1000 * time.Millisecond):
+			logger.Debug("No Zookeeper events, continuing...")
+		case event, ok := <-r.rapidStoreUpdateChan:
 			if !ok {
-				fmt.Println("Leader watch channel closed")
+				logger.Info("RapidStore watch channel closed")
 				return
 			}
-			fmt.Printf("Leader change detected: %v\n", event)
-			// Re-fetch leader info
 			switch event.Type {
-			case zk.EventNodeDeleted, zk.EventNodeCreated, zk.EventNodeDataChanged:
-				fmt.Println("Leader node deleted, waiting for new leader...")
-				time.Sleep(3 * time.Second) // brief pause to allow new leader to be elected
-				err := r.refreshLeader()
+			case zk.EventNodeChildrenChanged:
+				logger.Info("rapidstore node changed, checking leader and followers...", zap.Any("event", event))
+
+				// Get all children of /rapidstore
+				children, _, err := r.zooManager.Children("/rapidstore")
 				if err != nil {
-					fmt.Printf("Error refreshing leader info: %v\n", err)
+					logger.Error("Failed to get rapidstore children", zap.Error(err))
+					break
+				}
+
+				// Check if leader path exists
+				leaderExists := false
+				followerExists := false
+
+				for _, child := range children {
+					if child == "leader" {
+						leaderExists = true
+					}
+					if child == "follower" {
+						followerExists = true
+					}
+				}
+
+				// Handle leader changes
+				if leaderExists {
+					logger.Info("Leader path exists, refreshing leader info")
+					err := r.refreshLeader()
+					if err != nil {
+						logger.Error("Error refreshing leader info", zap.Error(err))
+					}
+				} else {
+					logger.Info("Leader path does not currently exist,")
+				}
+
+				// Handle follower changes
+				if followerExists {
+					logger.Info("Follower path exists, refreshing follower list")
+					err := r.refreshFollowers()
+					if err != nil {
+						logger.Error("Error refreshing follower info", zap.Error(err))
+					}
+				} else {
+					logger.Info("Follower path does not currently exist")
+				}
+				// set up new watch
+				_, _, r.rapidStoreUpdateChan, err = r.zooManager.ChildrenW(basePath)
+				if err != nil {
+					logger.Error("Failed to re-establish rapidstore watch", zap.Error(err))
+					return
 				}
 			}
-		case event, ok := <-r.followerUpdateChan:
-			if !ok { // this should never happen but for now just so we dont get pointer deref errors
-				fmt.Println("Follower watch channel closed")
-				return
-			}
-			switch event.Type {
-			case zk.EventNodeChildrenChanged, zk.EventNodeCreated, zk.EventNodeDeleted:
-				fmt.Println("Follower nodes changed, refreshing follower list...")
-			}
-			r.refreshFollowers()
 		}
 	}
 }
@@ -175,21 +237,15 @@ func (r *routerServer) randomFollower() (serverInfo, error) {
 
 }
 func (r *routerServer) refreshLeader() error {
-	_, _, leaderW, err := r.zooManager.GetW(leaderPath)
-	if err != nil {
-		return err
-	}
-	r.leaderUpdateChan = leaderW
-
 	leaderInfo, err := getLeader(r.zooManager, leaderPath)
 	if err != nil {
 		if err == ErrNoLeader {
-			fmt.Printf("no leader currently elected\n")
+			logger.Info("No leader currently elected")
 			r.Lock()
 			r.leaderAddr = ""
 			r.leaderPort = ""
 			r.Unlock()
-			fmt.Printf("Updated leader to: %s:%s\n", r.leaderAddr, r.leaderPort)
+			logger.Debug("upddated leader to empty values", zap.String("addr", r.leaderAddr), zap.String("port", r.leaderPort))
 			return nil
 		}
 		return err
@@ -198,7 +254,7 @@ func (r *routerServer) refreshLeader() error {
 	r.leaderAddr = leaderInfo.IP
 	r.leaderPort = leaderInfo.Port
 	r.Unlock()
-	fmt.Printf("Updated leader to: %s:%s\n", r.leaderAddr, r.leaderPort)
+	logger.Debug("upddated leader", zap.String("addr", r.leaderAddr), zap.String("port", r.leaderPort))
 
 	return nil
 }
@@ -210,14 +266,8 @@ func (r *routerServer) refreshFollowers() error {
 	r.Lock()
 	r.followers = followers
 	r.Unlock()
-	fmt.Printf("Updated followers: %v\n", r.followers)
+	logger.Debug("updated followers", zap.Any("followers", r.followers))
 
-	_, _, followerW, err := r.zooManager.ChildrenW(followerPath)
-	if err != nil {
-		return fmt.Errorf("failed to watch follower changes: %w", err)
-
-	}
-	r.followerUpdateChan = followerW
 	return nil
 }
 func getLeader(zkConn *zk.Conn, leaderPath string) (*serverInfo, error) {
@@ -237,7 +287,7 @@ func getLeader(zkConn *zk.Conn, leaderPath string) (*serverInfo, error) {
 	}
 
 	leaderInfo := string(data)
-	fmt.Printf("Current leader: %s\n", leaderInfo)
+	logger.Debug("Fetched leader info from Zookeeper", zap.String("leaderInfo", leaderInfo))
 
 	// Parse the IP and port
 	parts := strings.Split(leaderInfo, ":")
@@ -247,7 +297,7 @@ func getLeader(zkConn *zk.Conn, leaderPath string) (*serverInfo, error) {
 
 	addr := parts[0]
 	port := parts[1]
-	fmt.Printf("Leader IP: %s, Port: %s\n", addr, port)
+	logger.Debug("Parsed leader info", zap.String("IP", addr), zap.String("Port", port))
 
 	return &serverInfo{
 		IP:   addr,
@@ -281,7 +331,7 @@ func getFollowers(zkConn *zk.Conn, followerPath string) ([]serverInfo, error) {
 		data, _, err := zkConn.Get(fullPath)
 		if err != nil {
 			// Log error but continue with other followers
-			fmt.Printf("Failed to get data for follower %s: %v\n", child, err)
+			logger.Error("Failed to get data for follower", zap.String("child", child), zap.Error(err))
 			continue
 		}
 
@@ -289,7 +339,7 @@ func getFollowers(zkConn *zk.Conn, followerPath string) ([]serverInfo, error) {
 		if followerAddr != "" {
 			parts := strings.Split(followerAddr, ":")
 			if len(parts) != 2 {
-				fmt.Printf("Invalid follower address format for %s: %s\n", child, followerAddr)
+				logger.Error("Invalid follower address format", zap.String("child", child), zap.String("followerAddr", followerAddr))
 				continue
 			}
 			followers = append(followers, serverInfo{
@@ -304,8 +354,8 @@ func getFollowers(zkConn *zk.Conn, followerPath string) ([]serverInfo, error) {
 }
 func newRouter() (*routerServer, error) {
 	var zooKeeperAddr = os.Getenv("ZOOKEEPERADDR")
-	fmt.Printf("Using Zookeeper address: %s\n", zooKeeperAddr)
-	zkConn, _, err := zk.Connect([]string{zooKeeperAddr}, time.Second*30)
+	logger.Debug("Using Zookeeper address from env", zap.String("ZOOKEEPERADDR", zooKeeperAddr))
+	zkConn, _, err := zk.Connect([]string{zooKeeperAddr}, time.Second*2)
 	if err != nil {
 		return nil, err
 	}
@@ -323,32 +373,27 @@ func newRouter() (*routerServer, error) {
 	}
 	addr := servInfo.IP
 	port := servInfo.Port
-	fmt.Printf("Leader IP: %s, Port: %s\n", addr, port)
+	logger.Debug("Initial leader info", zap.String("IP", addr), zap.String("Port", port))
 
-	_, _, leaderW, err := zkConn.GetW(leaderPath)
-	if err != nil {
-		return nil, err
-	}
 	// follower data
 	followers, err := getFollowers(zkConn, followerPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get followers: %w", err)
 	}
-	fmt.Printf("Current followers: %v\n", followers)
+	logger.Debug("Initial followers", zap.Any("followers", followers))
 
-	_, _, followerW, err := zkConn.ChildrenW(followerPath)
+	_, _, rapidStoreW, err := zkConn.ChildrenW(basePath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to watch follower changes: %w", err)
+		return nil, fmt.Errorf("failed to watch rapidstore changes: %w", err)
 	}
 
 	return &routerServer{
-		exposePort:         8888,
-		leaderAddr:         addr,
-		leaderPort:         port,
-		followers:          followers,
-		leaderUpdateChan:   leaderW,
-		followerUpdateChan: followerW,
-		zooManager:         zkConn,
+		exposePort:           8888,
+		leaderAddr:           addr,
+		leaderPort:           port,
+		followers:            followers,
+		rapidStoreUpdateChan: rapidStoreW,
+		zooManager:           zkConn,
 	}, nil
 }
 func endListener(l net.Listener) func() {
@@ -360,13 +405,6 @@ func endListener(l net.Listener) func() {
 	}
 }
 
-// TODO: Read from zookeeper for the followers IP and port (Done)
-// TODO: parse basic GET & SET commmands and route them to correct place (Write -> leader, Read -> any follower or leader) (Done)
-// TODO: Finish implementing ListenForChanges (leader changes) & (follower changes) and update internal state
-// TODO: Replace all printfs with proper logging (zap)
-
-// Not in the scope of this ticket right now
-// TODO: Think about ways to handle connection retries (exponential backoff?)
 func main() {
 	r, err := newRouter()
 	if err != nil {
@@ -375,14 +413,14 @@ func main() {
 	path := fmt.Sprintf(":%d", r.exposePort)
 	list, err := net.Listen("tcp", path)
 	if err != nil {
-		fmt.Printf("error creating connection at port %s, %b", path, err)
+		logger.Error("error creating connection", zap.String("port", path), zap.Error(err))
 		return
 	}
 	fmt.Printf("Router server listening on port %d\n", r.exposePort)
+	logger.Debug("Successfully created listener", zap.String("port", path))
 	defer list.Close()
-
 	r.isLive = true
-	go r.listenForLeaderChanges()
+	go r.listenForChanges()
 	r.closer = endListener(list)
 
 	for r.isLive {
@@ -391,12 +429,15 @@ func main() {
 			if strings.HasSuffix(err.Error(), "use of closed network connection") {
 				break // Exit the loop if the listener is closed
 			}
-			fmt.Printf("encountered error reading connection %v \n", err)
+			logger.Error("encountered error reading connection", zap.Error(err))
 			continue
 		}
-		go r.handleConnection(conn)
+		// Handle each connection in a new goroutine && recover from panics so one bad connection doesnt crash the server
+		go func() {
+			handlePanics(func() { r.handleConnection(conn) })
+		}()
 	}
-	fmt.Printf("Router server is no longer live | shutting down...\n")
+	logger.Info("Router server shutting down...")
 }
 
 func getExternalIP() (string, error) {
@@ -426,4 +467,13 @@ func getExternalIP() (string, error) {
 	}
 
 	return "", fmt.Errorf("failed to get external IP from any service")
+}
+
+func handlePanics(fn func()) {
+	defer func() {
+		if err := recover(); err != nil {
+			fmt.Println("Recovered:", err)
+		}
+	}()
+	fn()
 }
