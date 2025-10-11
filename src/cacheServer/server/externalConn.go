@@ -25,6 +25,10 @@ const (
 	TTL    baseCommands = "TTL"
 	Exists baseCommands = "EXISTS"
 	Type   baseCommands = "TYPE"
+	Incr   baseCommands = "INCR"
+	Decr   baseCommands = "DECR"
+	Append baseCommands = "APPEND"
+	Mset   baseCommands = "MSET"
 	// Data structure commands
 	// Hash commands
 	HSet    baseCommands = "HSET"
@@ -173,6 +177,56 @@ func (s *Server) handleConnection(conn net.Conn) {
 			key := parts[1]
 			typ := s.ramCache.Type(key)
 			conn.Write([]byte(fmt.Sprintf("%s\n", typ)))
+		case string(Incr):
+			globalLogger.Info("INCR command received", zap.String("command", string(buff[:n])))
+			if len(parts) != 2 {
+				globalLogger.Warn("Invalid INCR command format", zap.String("command", string(buff[:n])))
+				conn.Write([]byte(fmt.Sprintf(" Error: Invalid INCR command format \n correct usage: %s\n", validCommands.Incr)))
+				continue
+			}
+			key := parts[1]
+			newv, err := s.ramCache.Increment(key)
+			if err != nil {
+				conn.Write([]byte("Error: " + err.Error() + "\n"))
+				continue
+			}
+			conn.Write([]byte(fmt.Sprintf("%d\n", newv)))
+		case string(Decr):
+			globalLogger.Info("DECR command received", zap.String("command", string(buff[:n])))
+			if len(parts) != 2 {
+				globalLogger.Warn("Invalid DECR command format", zap.String("command", string(buff[:n])))
+				conn.Write([]byte(fmt.Sprintf(" Error: Invalid DECR command format \n correct usage: %s\n", validCommands.Decr)))
+				continue
+			}
+			key := parts[1]
+			newv, err := s.ramCache.Decrement(key)
+			if err != nil {
+				conn.Write([]byte("Error: " + err.Error() + "\n"))
+				continue
+			}
+			conn.Write([]byte(fmt.Sprintf("%d\n", newv)))
+		case string(Append):
+			globalLogger.Info("APPEND command received", zap.String("command", string(buff[:n])))
+			if len(parts) < 3 {
+				globalLogger.Warn("Invalid APPEND command format", zap.String("command", string(buff[:n])))
+				conn.Write([]byte(fmt.Sprintf(" Error: Invalid APPEND command format \n correct usage: %s\n", validCommands.Append)))
+				continue
+			}
+			key := parts[1]
+			suffix := parts[2]
+			err := s.ramCache.Append(key, suffix)
+			if err != nil {
+				conn.Write([]byte("Error: " + err.Error() + "\n"))
+				continue
+			}
+			conn.Write([]byte(Successfull + "\n"))
+		case string(Mset):
+			globalLogger.Info("MSET command received", zap.String("command", string(buff[:n])))
+			//TODO: this is a bit more complicated since its a varadic function
+			toMap := decodePairs(parts[1:])
+			s.ramCache.MSet(toMap)
+			conn.Write([]byte(Successfull + "\n"))
+
 		case string(HSet):
 			globalLogger.Info("HSET command received", zap.String("command", string(buff[:n])))
 			if len(parts) < 4 {
@@ -530,6 +584,10 @@ type correctCommandFormat struct {
 	TTL    string
 	Exists string
 	Type   string
+	Incr   string
+	Decr   string
+	Append string
+	Mset   string
 
 	HSet    string
 	HGet    string
@@ -570,6 +628,10 @@ func newValidCMD() correctCommandFormat {
 		TTL:    "TTL key",
 		Exists: "EXISTS key",
 		Type:   "TYPE key",
+		Incr:   "INCR key",
+		Decr:   "DECR key",
+		Append: "APPEND key suffix",
+		Mset:   "MSET key1-value1 key2-value2 ...",
 
 		HSet:    "HSET key field value [ttl]",
 		HGet:    "HGET key field",
@@ -596,4 +658,20 @@ func newValidCMD() correctCommandFormat {
 		Zrevrank: "ZREVRANK key member",
 		Zscore:   "ZSCORE key member",
 	}
+}
+
+// key-value
+func decodePairs(pairs []string) map[string]any {
+	var toMap = make(map[string]any)
+	for i := range pairs {
+		pairs[i] = strings.TrimSpace(pairs[i])
+		pieces := strings.SplitN(pairs[i], "-", 2)
+		if len(pieces) != 2 {
+			continue
+		}
+		key := pieces[0]
+		value := pieces[1] // TODO: need to parse the actual type here
+		toMap[key] = value
+	}
+	return toMap
 }

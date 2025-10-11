@@ -60,7 +60,26 @@ Exists key
 Type key
 ```
 **returns the type of the value of the corresponding key**
-
+## Increment Command
+```bash
+Increment key
+```
+**increment the value of the corresponding key**
+## Decrement Command
+```bash
+decrement key
+```
+**decrement the value of the corresponding key**
+## Append Command
+```bash
+Append key suffix
+```
+**append a new suffix to a key**
+## Multiple Key-Set Command
+```bash
+Mset key-value key-value
+```
+**create multiple key-value pairs**
 
 # Data structure focused commands
 
@@ -206,15 +225,6 @@ Zrange key start stop [WithScores]
 ```
 
 **get members in a sorted set by rank (lowest to highest)**
-
-## Zrevrange Command
-
-```bash
-Zrevrange key start stop [WithScores]
-```
-
-**get members in a sorted set by rank (highest to lowest)**
-
 ## Zrank Command
 
 ```bash
@@ -222,7 +232,13 @@ Zrank key member
 ```
 
 **get the rank of a member in a sorted set**
+## ZRevRank Command
 
+```bash
+Zrevrank key member
+```
+
+**get the rank of a member in a sorted set**
 ## Zscore Command
 
 ```bash

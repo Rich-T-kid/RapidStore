@@ -52,7 +52,7 @@ type KeyInterface interface {
 	Increment(key string) (int64, error)
 	Decrement(key string) (int64, error)
 	Append(key string, suffix string) error
-	MSet(pairs ...basicSet) bool
+	MSet(pairs map[string]any) bool
 	LimitedStorage
 }
 
@@ -198,7 +198,7 @@ func (r *RapidStoreServer) Decrement(key string) (int64, error)      { return r.
 func (r *RapidStoreServer) Append(key string, suffix string) error {
 	return r.KeyManger.Append(key, suffix)
 }
-func (r *RapidStoreServer) MSet(pairs ...basicSet) bool { return r.KeyManger.MSet(pairs...) }
+func (r *RapidStoreServer) MSet(pairs map[string]any) bool { return r.KeyManger.MSet(pairs) }
 
 // HashTableManager methods
 func (r *RapidStoreServer) HSet(key, field string, value any, duration ...time.Duration) bool {
@@ -336,9 +336,18 @@ func (k *keyStore) ExpireKey(key string, duration time.Time) bool {
 func (k *keyStore) TTLKey(key string) (time.Duration, error) {
 	v, ok := k.internalData[key]
 	if !ok || !k.validKey(key, v) {
-		return time.Since(time.Now()), ErrKeyDoesNotExist
+		return 0, ErrKeyDoesNotExist
 	}
-	return time.Duration(time.Until(v.TTL).Seconds()), nil
+
+	// Return the actual duration until expiry
+	remaining := time.Until(v.TTL)
+
+	// If already expired, return 0
+	if remaining < 0 {
+		return 0, nil
+	}
+
+	return remaining, nil
 }
 
 func (k *keyStore) ExistsKey(key string) bool {
@@ -434,9 +443,9 @@ func (k *keyStore) Append(key string, suffix string) error {
 
 	return nil
 }
-func (k *keyStore) MSet(pairs ...basicSet) bool {
-	for _, pair := range pairs {
-		k.SetKey(pair.key, pair.value)
+func (k *keyStore) MSet(pairs map[string]any) bool {
+	for k1, v := range pairs {
+		k.SetKey(k1, v)
 	}
 	return true
 }
