@@ -42,7 +42,7 @@ type LimitedStorage interface {
 
 // KeyInterface defines methods for managing key-value pairs in the cache
 type KeyInterface interface {
-	SetKey(key string, value any)
+	SetKey(key string, value any, ttl ...time.Duration)
 	GetKey(key string) any
 	DeleteKey(key string)
 	ExpireKey(key string, duration time.Time) bool
@@ -181,9 +181,11 @@ func WithMemoryCheckInternal(dur time.Duration) func(*RapidStoreServer) {
 	}
 }
 
-func (r *RapidStoreServer) SetKey(key string, value any) { r.KeyManger.SetKey(key, value) }
-func (r *RapidStoreServer) GetKey(key string) any        { return r.KeyManger.GetKey(key) }
-func (r *RapidStoreServer) DeleteKey(key string)         { r.KeyManger.DeleteKey(key) }
+func (r *RapidStoreServer) SetKey(key string, value any, ttl ...time.Duration) {
+	r.KeyManger.SetKey(key, value, ttl...)
+}
+func (r *RapidStoreServer) GetKey(key string) any { return r.KeyManger.GetKey(key) }
+func (r *RapidStoreServer) DeleteKey(key string)  { r.KeyManger.DeleteKey(key) }
 func (r *RapidStoreServer) ExpireKey(key string, duration time.Time) bool {
 	return r.KeyManger.ExpireKey(key, duration)
 }
@@ -281,10 +283,19 @@ func (k *keyStore) validKey(key string, valuePair GeneralValue) bool {
 	}
 	return true
 }
-func (k *keyStore) SetKey(key string, value any) {
-	v := GeneralValue{
-		Value: value,
-		TTL:   neverExpires,
+func (k *keyStore) SetKey(key string, value any, ttl ...time.Duration) {
+	var v GeneralValue
+	fmt.Printf("Setting key: %s with value: %v and TTL: %v\n", key, value, ttl)
+	if len(ttl) > 0 {
+		v = GeneralValue{
+			Value: value,
+			TTL:   time.Now().Add(ttl[0])}
+	} else {
+		v = GeneralValue{
+			Value: value,
+			TTL:   neverExpires,
+		}
+
 	}
 	k.internalData[key] = v
 }
@@ -313,7 +324,7 @@ func (k *keyStore) TTLKey(key string) (time.Duration, error) {
 	if !ok || !k.validKey(key, v) {
 		return time.Since(time.Now()), ErrKeyDoesNotExist
 	}
-	return time.Until(v.TTL), nil
+	return time.Duration(time.Until(v.TTL).Seconds()), nil
 }
 
 func (k *keyStore) ExistsKey(key string) bool {

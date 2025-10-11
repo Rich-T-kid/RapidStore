@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -285,47 +284,7 @@ func (s *Server) Start() error {
 		go s.handleConnection(conn)
 	}
 }
-func (s *Server) handleConnection(conn net.Conn) {
-	defer conn.Close()
-	defer s.productionStats.DecrementActiveConnections()
-	// Handle client connection
-	globalLogger.Info("Accepted connection from", zap.String("remoteAddr", conn.RemoteAddr().String()))
 
-	// Keep reading commands until connection is closed
-	for {
-		buff := make([]byte, 1024)
-		n, err := conn.Read(buff)
-		if err != nil {
-			globalLogger.Warn("(cache Server) Connection closed or error reading", zap.Error(err))
-			return
-		}
-
-		parts := strings.Split(strings.TrimSpace(string(buff[:n])), " ")
-		base := parts[0]
-
-		if base == "Close" {
-			s.Stop()
-			return // Close this connection when server stops
-		} else if base == "PING" {
-			conn.Write([]byte("PONG\n"))
-		} else if strings.ToUpper(base) == "SET" && len(parts) >= 3 {
-			key := parts[1]
-			value := strings.Join(parts[2:], " ")
-			s.ramCache.SetKey(key, value)
-		} else if strings.ToUpper(base) == "GET" && len(parts) == 2 {
-			key := parts[1]
-			val := s.ramCache.GetKey(key)
-			if val == "" {
-				conn.Write([]byte("(nil)\n"))
-			} else {
-				conn.Write([]byte(fmt.Sprintf("%s\n", val)))
-			}
-		} else {
-			responseMsg := fmt.Sprintf("Echo: %s\n", strings.Join(parts, " "))
-			conn.Write([]byte(responseMsg))
-		}
-	}
-}
 func (s *Server) Stop() error {
 	s.isLive = false
 	s.close <- struct{}{}
