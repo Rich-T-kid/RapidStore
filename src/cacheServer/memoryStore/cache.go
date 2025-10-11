@@ -58,9 +58,9 @@ type KeyInterface interface {
 
 // HashTableManager defines methods for managing hash tables in the cache
 type HashTableManager interface {
-	HSet(key, field string, value any, duration time.Duration) bool // set a field ex: HSET user:!23 name "alice" (bool indicates wheater a new hashset was created)
-	HGet(key, field string) (any, error)                            // get a field ex: HGET user:!23 name -> "alice"
-	HGetAll(key string) map[string]any                              // HGETALL user:!23 -> map[name:alice age:30]
+	HSet(key, field string, value any, duration ...time.Duration) bool // set a field ex: HSET user:!23 name "alice" (bool indicates wheater a new hashset was created)
+	HGet(key, field string) (any, error)                               // get a field ex: HGET user:!23 name -> "alice"
+	HGetAll(key string) map[string]any                                 // HGETALL user:!23 -> map[name:alice age:30]
 	HDel(key, field string)
 	HExists(key, field string) bool
 	LimitedStorage
@@ -140,10 +140,11 @@ func NewRapidStore(option ...func(*RapidStoreServer)) *RapidStoreServer {
 		o(&t)
 	}
 	r := &RapidStoreServer{
-		KeyManger:   NewKeyStore(size, policy),
-		HashManager: NewFieldStore(size, policy),
-		SetM:        NewSetManager(size, policy),
-		SortSetM:    newSortedSetStore(size, policy),
+		KeyManger:       NewKeyStore(size, policy),
+		HashManager:     NewFieldStore(size, policy),
+		SequenceManager: NewOrderedListStore(size, policy),
+		SetM:            NewSetManager(size, policy),
+		SortSetM:        newSortedSetStore(size, policy),
 		//Utility:                NewCacheUtility(),
 		MaxMemory:              t.MaxMemory,
 		MaxKeys:                t.MaxKeys,
@@ -200,15 +201,28 @@ func (r *RapidStoreServer) Append(key string, suffix string) error {
 func (r *RapidStoreServer) MSet(pairs ...basicSet) bool { return r.KeyManger.MSet(pairs...) }
 
 // HashTableManager methods
-func (r *RapidStoreServer) HSet(key, field string, value any, duration time.Duration) bool {
-	return r.HashManager.HSet(key, field, value, duration)
+func (r *RapidStoreServer) HSet(key, field string, value any, duration ...time.Duration) bool {
+	return r.HashManager.HSet(key, field, value, duration...)
 }
 func (r *RapidStoreServer) HGet(key, field string) (any, error) {
-	return r.HashManager.HGet(key, field)
+	v, err := r.HashManager.HGet(key, field)
+	if err != nil {
+		return nil, err
+	}
+	realVal := v.(GeneralValue)
+	return realVal.Value, nil
 }
-func (r *RapidStoreServer) HGetAll(key string) map[string]any { return r.HashManager.HGetAll(key) }
-func (r *RapidStoreServer) HDel(key, field string)            { r.HashManager.HDel(key, field) }
-func (r *RapidStoreServer) HExists(key, field string) bool    { return r.HashManager.HExists(key, field) }
+func (r *RapidStoreServer) HGetAll(key string) map[string]any {
+	table := r.HashManager.HGetAll(key)
+	var res = make(map[string]any)
+	for k, v := range table {
+		realv := v.(GeneralValue)
+		res[k] = realv.Value
+	}
+	return res
+}
+func (r *RapidStoreServer) HDel(key, field string)         { r.HashManager.HDel(key, field) }
+func (r *RapidStoreServer) HExists(key, field string) bool { return r.HashManager.HExists(key, field) }
 
 // ListManager methods
 func (r *RapidStoreServer) LPush(key string, value any) error {
@@ -492,16 +506,22 @@ func (f *FieldStore) validKey(key string, field string, valuePair GeneralValue) 
 	return true
 }
 
-func (f *FieldStore) HSet(key, field string, value any, TTL time.Duration) bool {
+func (f *FieldStore) HSet(key, field string, value any, TTL ...time.Duration) bool {
+	realTTl := time.Duration(0)
+	if len(TTL) == 0 {
+		realTTl = time.Until(neverExpires)
+	} else {
+		realTTl = TTL[0]
+	}
 	v, ok := f.FieldData[key]
 	if !ok {
 		// if it doesnt exist allocate new map and set the field to the value
 		f.FieldData[key] = make(map[string]GeneralValue)
-		f.FieldData[key][field] = GeneralValue{Value: value, TTL: time.Now().Add(TTL)}
+		f.FieldData[key][field] = GeneralValue{Value: value, TTL: time.Now().Add(realTTl)}
 		return false
 	}
 	/// if it exist use the existing hashtable and assign the field to the value
-	v[field] = GeneralValue{Value: value, TTL: time.Now().Add(TTL)}
+	v[field] = GeneralValue{Value: value, TTL: time.Now().Add(realTTl)}
 	return true
 }
 

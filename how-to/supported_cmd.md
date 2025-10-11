@@ -3,7 +3,7 @@
 ### Notes
 - this is more of a guide for how the server will interperate these commands.If your looking for how to interact with the server over tcp look at `server_cmd.md`
 - commands are case insensitive I.E Set == SET == SeT
-- all strings will be parsed out using spaces as the delimiter
+- all strings will be parsed out using spaces as the delimiter, so be carfull of spaces inbetween commands and args
 
 # Server Commands
 ## Ping Command
@@ -27,9 +27,9 @@ SS Close
 
 ## Set Command 
 ```bash
-Set myKey MyValue
+Set myKey MyValue [TTL]
 ```
-**set a key-value pair**
+**set a key-value pair, option time to live can be provided in the form of seconds. If no ttl is provided its set to never expire**
 ## Get Command
 ```bash
 Get myKey 
@@ -52,7 +52,7 @@ TTL key
 **check the time to live (`ttl`) for a key** 
 ## Exist Command
 ```bash
-Exist key
+Exists key
 ```
 **check if a key exist**
 ## Type Command
@@ -66,9 +66,9 @@ Type key
 
 ## Hset Command
 ```bash
-Hset key field value
+Hset key field value [TTL]
 ```
-**set a field in hash table**
+**set a field in hash table,option time to live can be provided in the form of seconds. If no ttl is provided its set to never expire**
 ## Hget Command
 
 ```bash
@@ -194,7 +194,11 @@ Zadd key score member
 ```
 
 **add a member to a sorted set with a score**
-
+## Zremove
+```bash
+Zremove key member
+```
+**remove a member**
 ## Zrange Command
 
 ```bash
@@ -206,7 +210,7 @@ Zrange key start stop [WithScores]
 ## Zrevrange Command
 
 ```bash
-Zrevrange key start stop
+Zrevrange key start stop [WithScores]
 ```
 
 **get members in a sorted set by rank (highest to lowest)**

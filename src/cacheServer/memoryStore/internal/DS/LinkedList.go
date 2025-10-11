@@ -9,6 +9,7 @@ type SequenceStorage interface {
 	Peak() any          // copie of head
 	PeakTail() any      // copie of tail
 	Range(start, end int) []interface{}
+	CurrentSize() uint64
 	Size() uint
 }
 type Node struct {
@@ -133,6 +134,9 @@ func (l *LazyList) Range(start, end int) []interface{} {
 	}
 
 	return result
+}
+func (l *LazyList) CurrentSize() uint64 {
+	return uint64(l.Size())
 }
 
 func NewSequenceStorage() SequenceStorage {

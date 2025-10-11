@@ -35,7 +35,7 @@ func TestServerEchoPingFeatures(t *testing.T) {
 
 	// Test PING command
 	t.Run("PING command", func(t *testing.T) {
-		_, err := fmt.Fprintf(conn, "PING\n")
+		_, err := fmt.Fprintf(conn, "SS PING\n")
 		if err != nil {
 			t.Fatalf("Failed to send PING command: %v", err)
 		}
@@ -52,7 +52,7 @@ func TestServerEchoPingFeatures(t *testing.T) {
 	})
 	t.Run("ECHO command", func(t *testing.T) {
 		message := "Hello, World!"
-		_, err := fmt.Fprintf(conn, "ECHO %s\n", message)
+		_, err := fmt.Fprintf(conn, "SS ECHO %s\n", message)
 		if err != nil {
 			t.Fatalf("Failed to send ECHO command: %v", err)
 		}
@@ -62,7 +62,7 @@ func TestServerEchoPingFeatures(t *testing.T) {
 			t.Fatalf("Failed to read ECHO response: %v", err)
 		}
 
-		expected := fmt.Sprintf("Echo: ECHO %s\n", message)
+		expected := fmt.Sprintf("%s\n", message)
 		if response != expected {
 			t.Errorf("Expected '%s', got '%s'", expected, response)
 		}
