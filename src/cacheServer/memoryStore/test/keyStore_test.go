@@ -154,8 +154,7 @@ func TestType(t *testing.T) {
 
 func TestSetExpireTTLIntegration(t *testing.T) {
 	store := newTestStore()
-	store.SetKey("foo", "bar")
-	store.ExpireKey("foo", time.Now().Add(50*time.Millisecond))
+	store.SetKey("foo", "bar", 2*time.Second)
 
 	dur, err := store.TTLKey("foo")
 	if err != nil || dur <= 0 {
@@ -205,8 +204,7 @@ func TestTTLWithIncrementDecrementIntegration(t *testing.T) {
 	store := newTestStore()
 
 	// Set up a counter with a short TTL
-	store.SetKey("counter", int64(10))
-	store.ExpireKey("counter", time.Now().Add(100*time.Millisecond))
+	store.SetKey("counter", int64(10), 150*time.Millisecond)
 
 	// Verify key exists and has expected value
 	if val := store.GetKey("counter"); val != int64(10) {
@@ -221,7 +219,6 @@ func TestTTLWithIncrementDecrementIntegration(t *testing.T) {
 	if newVal != 11 {
 		t.Errorf("expected counter to be 11 after increment, got %d", newVal)
 	}
-
 	// Verify TTL is still positive
 	ttl, err := store.TTLKey("counter")
 	if err != nil {
@@ -265,6 +262,7 @@ func TestTTLWithIncrementDecrementIntegration(t *testing.T) {
 	// Verify the new key exists (should not have TTL)
 	if !store.ExistsKey("counter") {
 		t.Errorf("expected new counter to exist")
+
 	}
 }
 

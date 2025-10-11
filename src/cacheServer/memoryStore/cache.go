@@ -42,7 +42,7 @@ type LimitedStorage interface {
 
 // KeyInterface defines methods for managing key-value pairs in the cache
 type KeyInterface interface {
-	SetKey(key string, value any)
+	SetKey(key string, value any, ttl ...time.Duration)
 	GetKey(key string) any
 	DeleteKey(key string)
 	ExpireKey(key string, duration time.Time) bool
@@ -52,15 +52,15 @@ type KeyInterface interface {
 	Increment(key string) (int64, error)
 	Decrement(key string) (int64, error)
 	Append(key string, suffix string) error
-	MSet(pairs ...basicSet) bool
+	MSet(pairs map[string]any) bool
 	LimitedStorage
 }
 
 // HashTableManager defines methods for managing hash tables in the cache
 type HashTableManager interface {
-	HSet(key, field string, value any, duration time.Duration) bool // set a field ex: HSET user:!23 name "alice" (bool indicates wheater a new hashset was created)
-	HGet(key, field string) (any, error)                            // get a field ex: HGET user:!23 name -> "alice"
-	HGetAll(key string) map[string]any                              // HGETALL user:!23 -> map[name:alice age:30]
+	HSet(key, field string, value any, duration ...time.Duration) bool // set a field ex: HSET user:!23 name "alice" (bool indicates wheater a new hashset was created)
+	HGet(key, field string) (any, error)                               // get a field ex: HGET user:!23 name -> "alice"
+	HGetAll(key string) map[string]any                                 // HGETALL user:!23 -> map[name:alice age:30]
 	HDel(key, field string)
 	HExists(key, field string) bool
 	LimitedStorage
@@ -140,10 +140,11 @@ func NewRapidStore(option ...func(*RapidStoreServer)) *RapidStoreServer {
 		o(&t)
 	}
 	r := &RapidStoreServer{
-		KeyManger:   NewKeyStore(size, policy),
-		HashManager: NewFieldStore(size, policy),
-		SetM:        NewSetManager(size, policy),
-		SortSetM:    newSortedSetStore(size, policy),
+		KeyManger:       NewKeyStore(size, policy),
+		HashManager:     NewFieldStore(size, policy),
+		SequenceManager: NewOrderedListStore(size, policy),
+		SetM:            NewSetManager(size, policy),
+		SortSetM:        newSortedSetStore(size, policy),
 		//Utility:                NewCacheUtility(),
 		MaxMemory:              t.MaxMemory,
 		MaxKeys:                t.MaxKeys,
@@ -181,9 +182,11 @@ func WithMemoryCheckInternal(dur time.Duration) func(*RapidStoreServer) {
 	}
 }
 
-func (r *RapidStoreServer) SetKey(key string, value any) { r.KeyManger.SetKey(key, value) }
-func (r *RapidStoreServer) GetKey(key string) any        { return r.KeyManger.GetKey(key) }
-func (r *RapidStoreServer) DeleteKey(key string)         { r.KeyManger.DeleteKey(key) }
+func (r *RapidStoreServer) SetKey(key string, value any, ttl ...time.Duration) {
+	r.KeyManger.SetKey(key, value, ttl...)
+}
+func (r *RapidStoreServer) GetKey(key string) any { return r.KeyManger.GetKey(key) }
+func (r *RapidStoreServer) DeleteKey(key string)  { r.KeyManger.DeleteKey(key) }
 func (r *RapidStoreServer) ExpireKey(key string, duration time.Time) bool {
 	return r.KeyManger.ExpireKey(key, duration)
 }
@@ -195,18 +198,31 @@ func (r *RapidStoreServer) Decrement(key string) (int64, error)      { return r.
 func (r *RapidStoreServer) Append(key string, suffix string) error {
 	return r.KeyManger.Append(key, suffix)
 }
-func (r *RapidStoreServer) MSet(pairs ...basicSet) bool { return r.KeyManger.MSet(pairs...) }
+func (r *RapidStoreServer) MSet(pairs map[string]any) bool { return r.KeyManger.MSet(pairs) }
 
 // HashTableManager methods
-func (r *RapidStoreServer) HSet(key, field string, value any, duration time.Duration) bool {
-	return r.HashManager.HSet(key, field, value, duration)
+func (r *RapidStoreServer) HSet(key, field string, value any, duration ...time.Duration) bool {
+	return r.HashManager.HSet(key, field, value, duration...)
 }
 func (r *RapidStoreServer) HGet(key, field string) (any, error) {
-	return r.HashManager.HGet(key, field)
+	v, err := r.HashManager.HGet(key, field)
+	if err != nil {
+		return nil, err
+	}
+	realVal := v.(GeneralValue)
+	return realVal.Value, nil
 }
-func (r *RapidStoreServer) HGetAll(key string) map[string]any { return r.HashManager.HGetAll(key) }
-func (r *RapidStoreServer) HDel(key, field string)            { r.HashManager.HDel(key, field) }
-func (r *RapidStoreServer) HExists(key, field string) bool    { return r.HashManager.HExists(key, field) }
+func (r *RapidStoreServer) HGetAll(key string) map[string]any {
+	table := r.HashManager.HGetAll(key)
+	var res = make(map[string]any)
+	for k, v := range table {
+		realv := v.(GeneralValue)
+		res[k] = realv.Value
+	}
+	return res
+}
+func (r *RapidStoreServer) HDel(key, field string)         { r.HashManager.HDel(key, field) }
+func (r *RapidStoreServer) HExists(key, field string) bool { return r.HashManager.HExists(key, field) }
 
 // ListManager methods
 func (r *RapidStoreServer) LPush(key string, value any) error {
@@ -281,10 +297,19 @@ func (k *keyStore) validKey(key string, valuePair GeneralValue) bool {
 	}
 	return true
 }
-func (k *keyStore) SetKey(key string, value any) {
-	v := GeneralValue{
-		Value: value,
-		TTL:   neverExpires,
+func (k *keyStore) SetKey(key string, value any, ttl ...time.Duration) {
+	var v GeneralValue
+	fmt.Printf("Setting key: %s with value: %v and TTL: %v\n", key, value, ttl)
+	if len(ttl) > 0 {
+		v = GeneralValue{
+			Value: value,
+			TTL:   time.Now().Add(ttl[0])}
+	} else {
+		v = GeneralValue{
+			Value: value,
+			TTL:   neverExpires,
+		}
+
 	}
 	k.internalData[key] = v
 }
@@ -311,9 +336,18 @@ func (k *keyStore) ExpireKey(key string, duration time.Time) bool {
 func (k *keyStore) TTLKey(key string) (time.Duration, error) {
 	v, ok := k.internalData[key]
 	if !ok || !k.validKey(key, v) {
-		return time.Since(time.Now()), ErrKeyDoesNotExist
+		return 0, ErrKeyDoesNotExist
 	}
-	return time.Until(v.TTL), nil
+
+	// Return the actual duration until expiry
+	remaining := time.Until(v.TTL)
+
+	// If already expired, return 0
+	if remaining < 0 {
+		return 0, nil
+	}
+
+	return remaining, nil
 }
 
 func (k *keyStore) ExistsKey(key string) bool {
@@ -409,9 +443,9 @@ func (k *keyStore) Append(key string, suffix string) error {
 
 	return nil
 }
-func (k *keyStore) MSet(pairs ...basicSet) bool {
-	for _, pair := range pairs {
-		k.SetKey(pair.key, pair.value)
+func (k *keyStore) MSet(pairs map[string]any) bool {
+	for k1, v := range pairs {
+		k.SetKey(k1, v)
 	}
 	return true
 }
@@ -481,16 +515,22 @@ func (f *FieldStore) validKey(key string, field string, valuePair GeneralValue) 
 	return true
 }
 
-func (f *FieldStore) HSet(key, field string, value any, TTL time.Duration) bool {
+func (f *FieldStore) HSet(key, field string, value any, TTL ...time.Duration) bool {
+	realTTl := time.Duration(0)
+	if len(TTL) == 0 {
+		realTTl = time.Until(neverExpires)
+	} else {
+		realTTl = TTL[0]
+	}
 	v, ok := f.FieldData[key]
 	if !ok {
 		// if it doesnt exist allocate new map and set the field to the value
 		f.FieldData[key] = make(map[string]GeneralValue)
-		f.FieldData[key][field] = GeneralValue{Value: value, TTL: time.Now().Add(TTL)}
+		f.FieldData[key][field] = GeneralValue{Value: value, TTL: time.Now().Add(realTTl)}
 		return false
 	}
 	/// if it exist use the existing hashtable and assign the field to the value
-	v[field] = GeneralValue{Value: value, TTL: time.Now().Add(TTL)}
+	v[field] = GeneralValue{Value: value, TTL: time.Now().Add(realTTl)}
 	return true
 }
 

@@ -416,7 +416,6 @@ func main() {
 		logger.Error("error creating connection", zap.String("port", path), zap.Error(err))
 		return
 	}
-	fmt.Printf("Router server listening on port %d\n", r.exposePort)
 	logger.Debug("Successfully created listener", zap.String("port", path))
 	defer list.Close()
 	r.isLive = true
@@ -427,7 +426,7 @@ func main() {
 		conn, err := list.Accept()
 		if err != nil {
 			if strings.HasSuffix(err.Error(), "use of closed network connection") {
-				break // Exit the loop if the listener is closed
+				break // Exit the loop if the listener is close
 			}
 			logger.Error("encountered error reading connection", zap.Error(err))
 			continue

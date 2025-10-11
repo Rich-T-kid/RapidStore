@@ -3,9 +3,12 @@
 
 ## Commands to interact with the cache server
 
+### variable declarations.
+- Addr = address of the server| Ex: 23.452.42.76
+- Port = port of the server   | Ex: 6380
 ### Basic Connection Test
 ```bash
-printf "hello" | nc localhost 6380
+printf "hello" | nc Addr Port
 ```
 **Expected Response:** `Echo: hello`
 
