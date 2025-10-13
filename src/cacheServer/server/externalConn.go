@@ -65,6 +65,7 @@ const (
 var (
 	// Define a set of valid commands for quick lookup
 	validCommands = newValidCMD()
+	writeAheadLog = GetWAL()
 )
 
 // Handle individual client connection
@@ -114,6 +115,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 				continue
 			}
 			s.ramCache.SetKey(key, value, time.Second*time.Duration(ttl))
+			writeAheadLog.Append(NewSetEntry(key, value, time.Second*time.Duration(ttl)))
 			conn.Write([]byte(Successfull + "\n"))
 		case string(GET):
 			globalLogger.Info("GET command received", zap.String("command", string(buff[:n])))
