@@ -45,7 +45,7 @@ type KeyInterface interface {
 	SetKey(key string, value any, ttl ...time.Duration)
 	GetKey(key string) any
 	DeleteKey(key string)
-	ExpireKey(key string, duration time.Time) bool
+	ExpireKey(key string, duration time.Duration) bool
 	TTLKey(key string) (time.Duration, error)
 	ExistsKey(key string) bool
 	Type(key string) string
@@ -187,7 +187,7 @@ func (r *RapidStoreServer) SetKey(key string, value any, ttl ...time.Duration) {
 }
 func (r *RapidStoreServer) GetKey(key string) any { return r.KeyManger.GetKey(key) }
 func (r *RapidStoreServer) DeleteKey(key string)  { r.KeyManger.DeleteKey(key) }
-func (r *RapidStoreServer) ExpireKey(key string, duration time.Time) bool {
+func (r *RapidStoreServer) ExpireKey(key string, duration time.Duration) bool {
 	return r.KeyManger.ExpireKey(key, duration)
 }
 func (r *RapidStoreServer) TTLKey(key string) (time.Duration, error) { return r.KeyManger.TTLKey(key) }
@@ -324,12 +324,12 @@ func (k *keyStore) GetKey(key string) any {
 func (k *keyStore) DeleteKey(key string) {
 	delete(k.internalData, key)
 }
-func (k *keyStore) ExpireKey(key string, duration time.Time) bool {
+func (k *keyStore) ExpireKey(key string, duration time.Duration) bool {
 	v, ok := k.internalData[key]
 	if !ok || !k.validKey(key, v) {
 		return false
 	}
-	v.TTL = duration
+	v.TTL = time.Now().Add(duration)
 	k.internalData[key] = v
 	return true
 }
@@ -426,6 +426,7 @@ func (k *keyStore) Decrement(key string) (int64, error) {
 func (k *keyStore) Append(key string, suffix string) error {
 	v, exists := k.internalData[key]
 	if !exists || !k.validKey(key, v) {
+		fmt.Printf("Key %s does not exist or is expired. Initializing with suffix: %s\n", key, suffix)
 		// If key doesn't exist or is expired, set it to the new value
 		newVal := GeneralValue{Value: suffix, TTL: neverExpires}
 		k.internalData[key] = newVal
@@ -437,8 +438,8 @@ func (k *keyStore) Append(key string, suffix string) error {
 		return ErrValueWrongType("string", v.Value) // or handle error appropriately
 	}
 
-	strVal += suffix
-	v.Value = strVal
+	v.Value = strVal + suffix
+	fmt.Printf("After appending, key: %s has value: %s\n", key, v.Value)
 	k.internalData[key] = v
 
 	return nil

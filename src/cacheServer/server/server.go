@@ -215,6 +215,7 @@ type Server struct {
 	dynamicMessage  chan internalServerMSg
 	// other fields like listener, handlers, etc.
 	ramCache memorystore.Cache
+	Wal      *WriteAheadLog
 	close    chan struct{}
 	isLive   bool
 }
@@ -231,6 +232,7 @@ func NewServer(options ...serverOption) *Server {
 	var s = &Server{
 		config:         config,
 		ramCache:       memorystore.NewCache(),
+		Wal:            GetWAL(),
 		dynamicMessage: make(chan internalServerMSg, 1), // Buffered channel to avoid blocking
 		close:          make(chan struct{}),
 		isLive:         false,
