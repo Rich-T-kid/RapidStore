@@ -27,7 +27,7 @@ var (
 // entryLog represents a single log entry in the WAL
 type entryLog []byte
 
-// TODO: make this wrap the Reader/Writer interface
+// TODO: graceful shutdown, use a chan
 
 // entrys are size|data
 // size is uint16
@@ -145,6 +145,7 @@ type walEntry struct {
 	Checksum    uint32
 }
 
+// mostly for testing
 func (wal *WriteAheadLog) ReadWal(r io.Reader) <-chan walEntry {
 	result := make(chan walEntry)
 
@@ -202,43 +203,49 @@ func (wal *WriteAheadLog) ReadWal(r io.Reader) <-chan walEntry {
 }
 
 func NewSetEntry(key string, value interface{}, t time.Duration) entryLog {
-	v := fmt.Sprintf("SET %s %v [%v]", key, value, t)
+	seconds := int64(t.Seconds())
+	v := fmt.Sprintf("%s %s %v %d", SET, key, value, seconds)
 	return []byte(v)
 }
 func NewGetEntry(key string) entryLog {
-	v := fmt.Sprintf("GET %s", key)
+	v := fmt.Sprintf("%s %s", GET, key)
+	return []byte(v)
+}
+func NewGetAllEntry(key string) entryLog {
+	v := fmt.Sprintf("%s %s", GetAll, key)
 	return []byte(v)
 }
 
 func NewDeleteKeyEntry(key string) entryLog {
-	v := fmt.Sprintf("DEL %s", key)
+	v := fmt.Sprintf("%s %s", Del, key)
 	return []byte(v)
 }
 
 func NewExpireKey(key string, t time.Duration) entryLog {
-	v := fmt.Sprintf("EXPIRE %s", key)
+	seconds := int64(t.Seconds())
+	v := fmt.Sprintf("%s %s %d", Expire, key, seconds)
 	return []byte(v)
 }
 func NewExistKey(key string) entryLog {
-	v := fmt.Sprintf("EXISTS %s", key)
+	v := fmt.Sprintf("%s %s", Exists, key)
 	return []byte(v)
 }
 
 func NewType(key string) entryLog {
-	v := fmt.Sprintf("TYPE %s", key)
+	v := fmt.Sprintf("%s %s", Type, key)
 	return []byte(v)
 }
 
 func NewIncrement(key string) entryLog {
-	v := fmt.Sprintf("INCR %s", key)
+	v := fmt.Sprintf("%s %s", Incr, key)
 	return []byte(v)
 }
 func NewDecrement(key string) entryLog {
-	v := fmt.Sprintf("DECR %s", key)
+	v := fmt.Sprintf("%s %s", Decr, key)
 	return []byte(v)
 }
 func NewAppend(key, suffix string) entryLog {
-	v := fmt.Sprintf("Append %s %s", key, suffix)
+	v := fmt.Sprintf("%s %s %s", Append, key, suffix)
 	return []byte(v)
 
 }
@@ -248,121 +255,116 @@ func NewMset(pairs map[string]any) entryLog {
 		pair := fmt.Sprintf("%s-%v", k, v)
 		contigPairs += pair + "/"
 	}
-	v := fmt.Sprintf("MSet %s", contigPairs[:len(contigPairs)-1])
-	fmt.Printf("Generated MSet log: %s\n", v)
+	v := fmt.Sprintf("%s %s", Mset, contigPairs[:len(contigPairs)-1])
 	return []byte(v)
 }
 
 // HashTableManager entry log constructors
-func NewHSet(key, field string, value any, duration ...time.Duration) entryLog {
-	v := fmt.Sprintf("HSET %s %s %v [%v]", key, field, value, duration)
+func NewHSet(key, field string, value any, duration time.Duration) entryLog {
+	seconds := int64(duration.Seconds())
+	v := fmt.Sprintf("%s %s %s %v %d", HSet, key, field, value, seconds)
 	return []byte(v)
 }
 
 func NewHGet(key, field string) entryLog {
-	v := fmt.Sprintf("HGET %s %s", key, field)
+	v := fmt.Sprintf("%s %s %s", HGet, key, field)
 	return []byte(v)
 }
 
 func NewHGetAll(key string) entryLog {
-	v := fmt.Sprintf("HGetAll %s", key)
+	v := fmt.Sprintf("%s %s", HGetAll, key)
 	return []byte(v)
 }
 
 func NewHDel(key, field string) entryLog {
-	v := fmt.Sprintf("HDel %s %s", key, field)
+	v := fmt.Sprintf("%s %s %s", HDel, key, field)
 	return []byte(v)
 }
 
 func NewHExists(key, field string) entryLog {
-	v := fmt.Sprintf("HExists %s %s", key, field)
+	v := fmt.Sprintf("%s %s %s", HExists, key, field)
 	return []byte(v)
 }
 
 // ListManager entry log constructors
 func NewLPush(key string, value any) entryLog {
-	v := fmt.Sprintf("LPush %s %v", key, value)
+	v := fmt.Sprintf("%s %s %v", LPush, key, value)
 	return []byte(v)
 }
 
 func NewRPush(key string, value any) entryLog {
-	v := fmt.Sprintf("RPush %s %v", key, value)
+	v := fmt.Sprintf("%s %s %v", RPush, key, value)
 	return []byte(v)
 }
 
 func NewLPnilop(key string) entryLog {
-	v := fmt.Sprintf("LPOP %s", key)
+	v := fmt.Sprintf("%s %s", LPush, key)
 	return []byte(v)
 }
 
 func NewRPop(key string) entryLog {
-	v := fmt.Sprintf("RPOP %s", key)
+	v := fmt.Sprintf("%s %s", RPop, key)
 	return []byte(v)
 }
 
 func NewLRange(key string, start, stop int) entryLog {
-	v := fmt.Sprintf("LRange %s", key)
-	return []byte(v)
-}
-
-func NewSize(key string) entryLog {
-	v := fmt.Sprintf("LRange %s", key)
+	v := fmt.Sprintf("%s %s", LRange, key)
 	return []byte(v)
 }
 
 // SetManager entry log constructors
 func NewSAdd(key string, member any) entryLog {
-	v := fmt.Sprintf("SAdd %s %v", key, member)
+	v := fmt.Sprintf("%s %s %v", SAdd, key, member)
 	return []byte(v)
 }
 
 func NewSMembers(key string) entryLog {
-	v := fmt.Sprintf("SMembers %s", key)
+	v := fmt.Sprintf("%s %s", SMembers, key)
 	return []byte(v)
 }
 
 func NewSRem(key string, member any) entryLog {
-	v := fmt.Sprintf("SRem %s %v", key, member)
+	v := fmt.Sprintf("%s %s %v", SRem, key, member)
 	return []byte(v)
 }
 
 func NewSIsMember(key string, member any) entryLog {
-	v := fmt.Sprintf("SIsMember %s %v", key, member)
+	v := fmt.Sprintf("%s %s %v", SIsMember, key, member)
 	return []byte(v)
 }
 
 func NewSCard(key string) entryLog {
-	v := fmt.Sprintf("SCard %s", key)
+	v := fmt.Sprintf("%s %s", SCard, key)
 	return []byte(v)
 }
 
 // SortedSetManager entry log constructors
 func NewZAdd(key string, score float64, member string) entryLog {
-	v := fmt.Sprintf("ZAdd %s %v %s", key, score, member)
+	v := fmt.Sprintf("%s %s %v %s", ZAdd, key, score, member)
 	return []byte(v)
 }
 
 func NewZRemove(key string, member string) entryLog {
-	v := fmt.Sprintf("ZRem %s %s", key, member)
+	v := fmt.Sprintf("%s %s %s", Zremove, key, member)
 	return []byte(v)
 }
 
 func NewZRange(key string, start, stop int, withScores bool) entryLog {
-	v := fmt.Sprintf("ZRange %s %d %d %v", key, start, stop, withScores)
+	v := fmt.Sprintf("%s %s %d %d %v", Zrange, key, start, stop, withScores)
 	return []byte(v)
 }
 
 func NewZRank(key string, member string) entryLog {
-	v := fmt.Sprintf("ZRank %s %s", key, member)
+	v := fmt.Sprintf("%s %s %s", Zrank, key, member)
 	return []byte(v)
 }
 
 func NewZRevRank(key string, member string) entryLog {
-	v := fmt.Sprintf("ZRevRank %s %s", key, member)
+	v := fmt.Sprintf("%s %s %s", Zrevrank, key, member)
 	return []byte(v)
 }
 
 func NewZScore(key string, member string) entryLog {
-	v := fmt.Sprintf("ZScore %s %s", key, member)
+	v := fmt.Sprintf("%s %s %s", Zscore, key, member)
 	return []byte(v)
 }

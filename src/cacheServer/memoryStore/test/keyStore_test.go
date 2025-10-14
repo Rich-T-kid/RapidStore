@@ -36,7 +36,7 @@ func TestDeleteKey(t *testing.T) {
 func TestExpireKey(t *testing.T) {
 	store := newTestStore()
 	store.SetKey("foo", "bar")
-	ok := store.ExpireKey("foo", time.Now().Add(1*time.Second))
+	ok := store.ExpireKey("foo", 1*time.Second)
 
 	if !ok {
 		t.Errorf("expected ExpireKey to succeed")
@@ -46,7 +46,7 @@ func TestExpireKey(t *testing.T) {
 func TestTTLKey(t *testing.T) {
 	store := newTestStore()
 	store.SetKey("foo", "bar")
-	store.ExpireKey("foo", time.Now().Add(2*time.Second))
+	store.ExpireKey("foo", 2*time.Second)
 
 	dur, err := store.TTLKey("foo")
 	if err != nil {
@@ -277,8 +277,8 @@ func TestTTLWithStringOperationsIntegration(t *testing.T) {
 	store.SetKey("no_ttl", "permanent")
 
 	// Set TTLs
-	store.ExpireKey("short_ttl", time.Now().Add(50*time.Millisecond))
-	store.ExpireKey("medium_ttl", time.Now().Add(200*time.Millisecond))
+	store.ExpireKey("short_ttl", 50*time.Millisecond)
+	store.ExpireKey("medium_ttl", 200*time.Millisecond)
 	// no_ttl key has no expiration
 
 	// Verify all keys exist initially
@@ -378,7 +378,7 @@ func TestExpireAndTTLIntegration(t *testing.T) {
 	store := newTestStore()
 
 	store.SetKey("session", "token123")
-	ok := store.ExpireKey("session", time.Now().Add(50*time.Millisecond))
+	ok := store.ExpireKey("session", 50*time.Millisecond)
 	if !ok {
 		t.Errorf("expected true on setting expiration")
 	}
@@ -482,7 +482,7 @@ func TestMissingKeysIntegration(t *testing.T) {
 	}
 
 	// Expire missing
-	ok := store.ExpireKey("notthere", time.Now().Add(time.Minute))
+	ok := store.ExpireKey("notthere", time.Minute)
 	if ok {
 		t.Errorf("expected false when expiring missing key")
 	}
