@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -93,7 +94,7 @@ func (s *Server) initLeader() error {
 	if pos == -1 {
 		return errors.New(" invalid state encountered ")
 	}
-	fmt.Printf("node: %s is at position %d\n", path, pos)
+	globalLogger.Debug("Node: ", zap.String("path", path), zap.Int("position", pos))
 	// Extract just the node name from our created path for comparison
 	// path is like "/rapidstore/election/node_0000000001"
 	// We need just "node_0000000001" to compare with children[0]
@@ -128,7 +129,13 @@ func (s *Server) initLeader() error {
 				return fmt.Errorf("failed to create leader path: %w", err)
 			}
 		}
-		// nodes are ephemeral so no need to delete
+		s.config.election.followerInfo = NewFollowers(zkConn, followerPath)
+		globalLogger.Info("Current followers", zap.Int("count", len(s.config.election.followerInfo)))
+		for _, f := range s.config.election.followerInfo {
+			globalLogger.Info("Follower", zap.String("address", f.address), zap.String("port", f.port))
+		}
+		go s.watchFollowers()
+		go s.attemptSyncFollowers()
 	} else {
 		globalLogger.Debug("You are a follower", zap.String("leader", electedLeader))
 		s.config.election.isLeader = false
@@ -213,6 +220,7 @@ func (s *Server) newElection() error {
 		return fmt.Errorf("failed to get external IP: %w", err)
 	}
 	if myNodeName == electedLeader {
+		//TODO: set up connection to followers
 		globalLogger.Info("I am the new leader!")
 		s.config.election.isLeader = true
 
@@ -238,10 +246,25 @@ func (s *Server) newElection() error {
 		if err != nil {
 			panic(fmt.Sprintf("Failed to update leader path: %v", err))
 		}
+		s.config.election.followerInfo = NewFollowers(zkConn, followerPath)
+		globalLogger.Info("Current followers", zap.Int("count", len(s.config.election.followerInfo)))
+		for _, f := range s.config.election.followerInfo {
+			globalLogger.Info("Follower", zap.String("address", f.address), zap.String("port", f.port))
+		}
+		go s.watchFollowers()
 
 	} else {
 		globalLogger.Info("I am a follower!", zap.String("leader", electedLeader), zap.String("myNode", myNodeName))
 		s.config.election.isLeader = false
+		// get leader info and store
+
+		lconf, err := newLeader(zkConn)
+		if err != nil {
+			return fmt.Errorf("failed to set up leader connection in newElection: %w", err)
+		}
+
+		s.config.election.updateLeaderInfo(lconf.Address, lconf.Port, lconf.c)
+		s.dynamicMessage <- restartLeaderStream
 
 		// Find my index and watch predecessor
 		myIndex := -1
@@ -339,9 +362,42 @@ func (s *Server) watchZoo() {
 			default:
 				globalLogger.Debug("Unhandled leader event type", zap.String("eventType", event.Type.String()), zap.String("eventTypeRaw", fmt.Sprintf("%v", event.Type)))
 			}
+		}
+	}
+}
 
-		default:
-			globalLogger.Info("No events received, continuing...")
+// only the leader watches followers
+func (s *Server) watchFollowers() {
+	ticker := time.NewTicker(time.Second * 3)
+
+	_, _, followerW, _ := s.config.election.zkConn.ChildrenW(followerPath)
+	for {
+		select {
+		case event := <-followerW:
+			globalLogger.Debug("Received event from followers", zap.String("eventType", event.Type.String()), zap.String("eventTypeRaw", fmt.Sprintf("%v", event.Type)))
+			switch event.Type {
+			case zk.EventNodeChildrenChanged:
+				globalLogger.Info("Follower list changed - updating followers")
+				s.config.election.followerInfo = NewFollowers(s.config.election.zkConn, followerPath)
+				globalLogger.Info("Current followers", zap.Int("count", len(s.config.election.followerInfo)))
+				for _, f := range s.config.election.followerInfo {
+					globalLogger.Info("Follower", zap.String("address", f.address), zap.String("port", f.port))
+				}
+			case zk.EventNotWatching:
+				globalLogger.Info("Follower watch stopped - restarting watch")
+				// Need to restart the watch
+			default:
+				globalLogger.Debug("Unhandled follower event type", zap.String("eventType", event.Type.String()), zap.String("eventTypeRaw", fmt.Sprintf("%v", event.Type)))
+			}
+			_, _, followerChan, _ := s.config.election.zkConn.ChildrenW(followerPath)
+			followerW = followerChan // keep this going forever
+		case <-ticker.C:
+			if !s.isLive || !s.config.election.isLeader {
+				ticker.Stop()
+				return
+			}
+			// just a keep alive to check if we should still be watching
+			globalLogger.Debug("Watching followers...", zap.Int("followerCount", len(s.config.election.followerInfo)))
 		}
 	}
 }
@@ -382,6 +438,43 @@ func (s *Server) removeFollowerNode(nodeData string, path string) error {
 
 	return fmt.Errorf("follower node with data %s not found", nodeData)
 }
+func (s *Server) attemptSyncFollowers() {
+	if !s.config.election.isLeader {
+		return
+	}
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.close:
+			globalLogger.Debug("Stopping follower sync attempts")
+			return
+		case <-ticker.C:
+			for i := range s.config.election.followerInfo {
+				go func(f *followerInfo) {
+					// Only attempt connection if we don't have one
+					if f.c == nil {
+						c, err := net.Dial("tcp", fmt.Sprintf("%s:%s", f.address, f.port))
+						if err != nil {
+							globalLogger.Warn("Failed to connect to follower",
+								zap.String("address", f.address),
+								zap.String("port", f.port),
+								zap.Error(err))
+							return
+						}
+
+						globalLogger.Info("Successfully connected to follower",
+							zap.String("address", f.address),
+							zap.String("port", f.port))
+						f.c = c
+					}
+				}(&s.config.election.followerInfo[i])
+			}
+		}
+	}
+}
 
 func getExternalIP() (string, error) {
 	services := []string{
@@ -410,4 +503,110 @@ func getExternalIP() (string, error) {
 	}
 
 	return "", fmt.Errorf("failed to get external IP from any service")
+}
+func NewFollowers(zkConn *zk.Conn, path string) []followerInfo {
+	var resultFollowerInfo []followerInfo
+	// check if theres a follower path
+	exist, _, err := zkConn.Exists(path)
+	if err != nil {
+		globalLogger.Error("error checking follower path", zap.Error(err))
+		return nil // no follower path, nothing to do
+	}
+	if exist {
+		followers, _, err := zkConn.Children(path)
+		if err != nil {
+			globalLogger.Error("error getting follower children", zap.Error(err))
+			return nil
+		}
+		for _, f := range followers {
+			// Get the data for this follower node
+			followerNodePath := fmt.Sprintf("%s/%s", followerPath, f)
+			data, _, err := zkConn.Get(followerNodePath)
+			if err != nil {
+				globalLogger.Error("failed to get follower data", zap.String("follower", f), zap.Error(err))
+				continue
+			}
+
+			// Parse IP:PORT format
+			parts := strings.Split(string(data), ":")
+			if len(parts) != 2 {
+				globalLogger.Error("invalid follower data format", zap.String("data", string(data)))
+				continue
+			}
+
+			// interserver comms happens on port + 1
+			// so if follower is on 8000 we connect to it on 8001
+			// this is to keep client and interserver comms separate
+			ip := parts[0]
+			strPort := parts[1]
+			intPort, err := strconv.Atoi(strPort)
+			if err != nil {
+				globalLogger.Error("invalid port in follower data", zap.String("port", strPort), zap.Error(err))
+				continue
+			}
+			intPort++
+			port := strconv.Itoa(intPort)
+
+			globalLogger.Info("Found follower", zap.String("ip", ip), zap.String("port", port))
+			time.Sleep(1000 * time.Millisecond) // slight delay to avoid race conditions
+			var conn net.Conn
+			for attempts := 0; attempts < 3; attempts++ {
+				c, err := NewConnectionToNode(ip, port)
+				if err == nil {
+					conn = c
+					// Success
+					break
+				}
+				if attempts < 2 {
+					time.Sleep(time.Duration(attempts+1) * time.Second)
+				}
+			}
+			resultFollowerInfo = append(resultFollowerInfo, followerInfo{
+				address: ip,
+				port:    port,
+				c:       conn,
+			})
+		}
+	}
+	return resultFollowerInfo
+}
+func newLeader(zkConn *zk.Conn) (leaderInfo, error) {
+	leaderData, _, err := zkConn.Get(leaderPath)
+	if err != nil {
+		panic(fmt.Sprintf("Failed to get leader data: %v", err))
+	}
+
+	// Parse the data (format is "IP:PORT")
+	leaderInfostr := string(leaderData)
+	parts := strings.Split(leaderInfostr, ":")
+	if len(parts) != 2 {
+		panic(fmt.Sprintf("Invalid leader data format: %s", leaderInfostr))
+	}
+
+	addr := parts[0]
+	strPort := parts[1]
+	intPort, err := strconv.Atoi(strPort)
+	if err != nil {
+		globalLogger.Error("invalid port in follower data", zap.String("port", strPort), zap.Error(err))
+		return leaderInfo{}, err
+	}
+	intPort++
+	port := strconv.Itoa(intPort)
+	c, err := NewConnectionToNode(addr, port)
+	if err != nil {
+		return leaderInfo{}, fmt.Errorf("failed to connect to leader at %s:%s: %w", addr, port, err)
+	}
+	return leaderInfo{
+		Address: addr,
+		Port:    port,
+		c:       c,
+	}, nil
+}
+func NewConnectionToNode(Addr string, Port string) (net.Conn, error) {
+	address := fmt.Sprintf("%s:%s", Addr, Port)
+	conn, err := net.Dial("tcp4", address)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to leader at %s: %w", address, err)
+	}
+	return conn, nil
 }

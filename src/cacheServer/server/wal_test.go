@@ -71,7 +71,7 @@ func TestAppendDataStructures(t *testing.T) {
 
 		NewLPush("list:1", "a"),
 		NewRPush("list:1", "b"),
-		NewLPnilop("list:1"),
+		NewLPop("list:1"),
 		NewRPop("list:1"),
 		NewLRange("list:1", 0, 10),
 

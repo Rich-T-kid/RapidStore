@@ -18,7 +18,7 @@ func TestServerConfigPropagation(t *testing.T) {
 
 		// Persistence configuration - individual fields
 		WithWALSyncInterval(2*time.Second),
-		WithWALPath("/custom/wal/path.log"),
+		WithWALPath("test-wal.log"),
 		WithWALMaxSize(200*1024*1024), // 200MB
 
 		// Monitoring configuration - individual fields
@@ -62,7 +62,7 @@ func TestServerConfigPropagation(t *testing.T) {
 			t.Errorf("Expected WALSyncInterval to be 2s, got %v", config.persistence.WALSyncInterval)
 		}
 
-		if config.persistence.WALPath != "/custom/wal/path.log" {
+		if config.persistence.WALPath != "test-wal.log" {
 			t.Errorf("Expected WALPath to be '/custom/wal/path.log', got '%s'", config.persistence.WALPath)
 		}
 

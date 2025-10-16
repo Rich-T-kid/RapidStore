@@ -56,6 +56,7 @@ func GetWAL() *WriteAheadLog {
 // Write now all entries to disk immediately, mabey we could buffer them in the future?
 func newWAL(filePath string, maxSize uint32, maxDuration time.Duration) *WriteAheadLog {
 	ctx, cnl := context.WithCancel(context.Background())
+	createFileIfNotExist(filePath)
 	f, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		panic(fmt.Sprintf("Failed to open WAL file: %v", err))
@@ -83,6 +84,8 @@ func (wal *WriteAheadLog) sync() error {
 	wal.lastFlush = time.Now()
 	return err
 }
+
+// keep track of which entrys other nodes have applied. truncate the file to the last non consumed entry
 func (wal *WriteAheadLog) autoSync() {
 	ticker := time.NewTicker(wal.maxTime)
 	defer ticker.Stop()
@@ -111,17 +114,23 @@ func (wal *WriteAheadLog) Close() error {
 	return nil
 }
 
-// add checksums
+// add Seq# to the entry (prefixed) & need a way to mark the operation as completed once
+// in mememory state is updated (this pertains to this machine as well as other nodes) this needs to be updated with config defintions
+// we may only need to keep track of write operations
 func (wal *WriteAheadLog) Append(entry entryLog) error {
 	wal.lock.Lock()
 	defer wal.lock.Unlock()
 	entrySize := uint32(len(entry))
 	// If adding this entry would exceed buffer capacity, flush first
-	if wal.buffer.Len()+4+len(entry) > wal.buffer.Cap() {
+	newEntrySize := 4 + 8 + 4 + len(entry) + 4 // magic(4) + seq(8) + size(4) + entry + checksum(4)
+	if wal.buffer.Len()+newEntrySize > wal.buffer.Cap() || time.Since(wal.lastFlush) >= wal.maxTime {
 		wal.sync()
 	}
 	if err := binary.Write(wal.buffer, binary.BigEndian, magicNumber); err != nil {
 		return fmt.Errorf("failed to write magic number: %v", err)
+	}
+	if err := binary.Write(wal.buffer, binary.BigEndian, wal.sequenceNumber); err != nil {
+		return fmt.Errorf("failed to write sequence number: %v", err)
 	}
 	if err := binary.Write(wal.buffer, binary.BigEndian, entrySize); err != nil {
 		return fmt.Errorf("failed to write entry size: %v", err)
@@ -140,12 +149,13 @@ func (wal *WriteAheadLog) Append(entry entryLog) error {
 
 type walEntry struct {
 	MagicNumber uint32
+	SequenceNum uint64
 	EntrySize   uint32
 	Entry       entryLog
 	Checksum    uint32
 }
 
-// mostly for testing
+// todo: update so its the same buffer
 func (wal *WriteAheadLog) ReadWal(r io.Reader) <-chan walEntry {
 	result := make(chan walEntry)
 
@@ -153,33 +163,52 @@ func (wal *WriteAheadLog) ReadWal(r io.Reader) <-chan walEntry {
 		defer close(result) // Always close the channel when done
 
 		for {
-			beginBuffer := make([]byte, 8) // magicNumber & len
-			n, err := r.Read(beginBuffer)
+			// Read magic number (4 bytes)
+			magicBuff := make([]byte, 4)
+			n, err := r.Read(magicBuff)
 			if err != nil {
 				// EOF or other read error, stop reading
 				break
 			}
 
-			storedMagic := binary.BigEndian.Uint32(beginBuffer[:4])
-			if n != 8 || storedMagic != magicNumber {
+			storedMagic := binary.BigEndian.Uint32(magicBuff)
+			if n != 4 || storedMagic != magicNumber {
 				// Invalid magic number or incomplete read
 				break
 			}
 
-			length := binary.BigEndian.Uint32(beginBuffer[4:])
+			// Read sequence number (8 bytes)
+			seqBuff := make([]byte, 8)
+			n, err = r.Read(seqBuff)
+			if err != nil || n != 8 {
+				// Failed to read sequence number, skip
+				break
+			}
+			seqNum := binary.BigEndian.Uint64(seqBuff)
+
+			// Read entry size (4 bytes)
+			sizeBuff := make([]byte, 4)
+			n, err = r.Read(sizeBuff)
+			if err != nil || n != 4 {
+				// Failed to read length, skip
+				break
+			}
+			length := binary.BigEndian.Uint32(sizeBuff)
+
+			// Read log entry (variable length)
 			logEntry := make([]byte, length)
 			n, err = r.Read(logEntry)
-			if err != nil {
-				// Read error, skip this entry
-				continue
+			if err != nil || n != int(length) {
+				// Read error or incomplete read, skip this entry
+				break
 			}
-			logEntry = logEntry[:n]
 
+			// Read checksum (4 bytes)
 			checkSum := make([]byte, 4)
-			_, err = r.Read(checkSum)
-			if err != nil {
+			n, err = r.Read(checkSum)
+			if err != nil || n != 4 {
 				// Failed to read checksum, skip
-				continue
+				break
 			}
 
 			storedCK := binary.BigEndian.Uint32(checkSum)
@@ -192,6 +221,7 @@ func (wal *WriteAheadLog) ReadWal(r io.Reader) <-chan walEntry {
 			// Send valid entry to channel
 			result <- walEntry{
 				MagicNumber: storedMagic,
+				SequenceNum: seqNum,
 				EntrySize:   length,
 				Entry:       logEntry,
 				Checksum:    storedCK,
@@ -297,7 +327,7 @@ func NewRPush(key string, value any) entryLog {
 	return []byte(v)
 }
 
-func NewLPnilop(key string) entryLog {
+func NewLPop(key string) entryLog {
 	v := fmt.Sprintf("%s %s", LPush, key)
 	return []byte(v)
 }
@@ -367,4 +397,13 @@ func NewZRevRank(key string, member string) entryLog {
 func NewZScore(key string, member string) entryLog {
 	v := fmt.Sprintf("%s %s %s", Zscore, key, member)
 	return []byte(v)
+}
+func createFileIfNotExist(filePath string) {
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		file, err := os.Create(filePath)
+		if err != nil {
+			panic(fmt.Sprintf("Failed to create WAL file: %v", err))
+		}
+		file.Close()
+	}
 }

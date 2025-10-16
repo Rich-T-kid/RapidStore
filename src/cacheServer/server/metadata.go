@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/go-zookeeper/zk"
 	"github.com/shirou/gopsutil/cpu"
+	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 )
 
@@ -141,9 +143,9 @@ type PersistenceConfig struct {
 
 func defaultPersistenceConfig() *PersistenceConfig {
 	return &PersistenceConfig{
-		WALSyncInterval: 1 * time.Second,
-		WALPath:         "./wal.log",
-		WALMaxSize:      10 * 1024 * 1024, // 10 MB
+		WALSyncInterval: 500 * time.Millisecond,
+		WALPath:         "wal.log",
+		WALMaxSize:      4096, //
 	}
 }
 
@@ -166,6 +168,12 @@ func defaultMonitoringConfig() *MonitoringConfig {
 type leaderInfo struct {
 	Address string
 	Port    string
+	c       net.Conn // direct tcp connection to leader
+}
+type followerInfo struct {
+	address string
+	port    string
+	c       net.Conn // direct tcp connection to follower
 }
 type ElectionConfig struct {
 	connTimeout         time.Duration
@@ -178,12 +186,27 @@ type ElectionConfig struct {
 	NodeID              string        `json:"nodeid" yml:"node_id"`                     // unique identifier for this node
 	Timeout             time.Duration `json:"timeout" yml:"timeout"`                    //heartbeat timeout try to keep relatively low so we know quickly if a node is down
 	leaderInfo          leaderInfo
+	followerInfo        []followerInfo
 }
 
-func (e *ElectionConfig) updateLeaderInfo(addr string, port string) {
+// in theory this shouldnt be able to fail since we got the address from zookeeper
+func (e *ElectionConfig) updateLeaderInfo(addr string, port string, conn ...net.Conn) {
+	var c net.Conn
+	var err error
+
+	if len(conn) > 0 {
+		c = conn[0]
+	} else {
+		c, err = NewConnectionToNode(addr, port)
+		if err != nil {
+			globalLogger.Error("Failed to connect to leader", zap.String("address", addr), zap.String("port", port), zap.Error(err))
+			panic(fmt.Sprintf("Failed to connect to leader at %s:%s: %v", addr, port, err))
+		}
+	}
 	e.leaderInfo = leaderInfo{
 		Address: addr,
 		Port:    port,
+		c:       c,
 	}
 }
 func defaultElectionConfig() *ElectionConfig {

@@ -10,6 +10,11 @@ import (
 	"go.uber.org/zap"
 )
 
+var (
+	neverExpireIntRepresentation = -1
+	neverExpires                 = time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC)
+)
+
 type baseCommands string
 
 const (
@@ -67,7 +72,6 @@ const (
 var (
 	// Define a set of valid commands for quick lookup
 	validCommands = newValidCMD()
-	writeAheadLog = GetWAL()
 )
 
 // Handle individual client connection
@@ -100,24 +104,31 @@ func (s *Server) handleConnection(conn net.Conn) {
 			key := parts[1]
 			// TODO: need to parse this as the actuall type. right now its just a string
 			// reflection?
-			value := parts[2]
+			value := trueType(parts[2])
 			// check if ttl is provided
-
-			if len(parts) < 4 {
-				s.ramCache.SetKey(key, value)
-				conn.Write([]byte(Successfull + "\n"))
+			// if not provided set default value
+			var ttl = neverExpireIntRepresentation
+			if len(parts) >= 4 {
+				_, err := fmt.Sscanf(parts[3], "%d", &ttl)
+				if err != nil || ttl < 0 {
+					globalLogger.Warn("Invalid TTL value", zap.String("command", string(buff[:n])))
+					conn.Write([]byte("Error: Invalid TTL value\n"))
+					continue
+				}
+			}
+			content := NewSetEntry(key, value, time.Second*time.Duration(ttl))
+			if err := s.Wal.Append(content); err != nil {
+				globalLogger.Error("WAL Append error", zap.Error(err))
+				conn.Write([]byte(Failed + "\n"))
 				continue
 			}
-			// parse ttl
-			var ttl int
-			_, err := fmt.Sscanf(parts[3], "%d", &ttl)
-			if err != nil || ttl < 0 {
-				globalLogger.Warn("Invalid TTL value", zap.String("command", string(buff[:n])))
-				conn.Write([]byte("Error: Invalid TTL value\n"))
-				continue
+			// after appending to wal, write out to
+			if ttl == -1 {
+				s.ramCache.SetKey(key, value, time.Until(neverExpires))
+			} else {
+				s.ramCache.SetKey(key, value, time.Second*time.Duration(ttl))
 			}
-			s.ramCache.SetKey(key, value, time.Second*time.Duration(ttl))
-			writeAheadLog.Append(NewSetEntry(key, value, time.Second*time.Duration(ttl)))
+			syncExternal(s.config.election.followerInfo, content, 1, time.Second*2)
 			conn.Write([]byte(Successfull + "\n"))
 		case string(GET):
 			globalLogger.Info("GET command received", zap.String("command", string(buff[:n])))
@@ -141,8 +152,14 @@ func (s *Server) handleConnection(conn net.Conn) {
 				continue
 			}
 			key := parts[1]
+			if err := s.Wal.Append(NewDeleteKeyEntry(key)); err != nil {
+				globalLogger.Error("WAL Append error", zap.Error(err))
+				conn.Write([]byte(Failed + "\n"))
+				continue
+			}
 			s.ramCache.DeleteKey(key)
 			conn.Write([]byte(Successfull + "\n"))
+		// ToDO update this so that internally handles time.Time for expireation due to latency
 		case string(Expire):
 			globalLogger.Info("EXPIRE command received", zap.String("command", string(buff[:n])))
 			if len(parts) != 3 {
@@ -151,7 +168,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 				continue
 			}
 			key := parts[1]
-			var ttl int
+			var ttl = neverExpireIntRepresentation
 			timeToLive := parts[2]
 			_, err := fmt.Sscanf(timeToLive, "%d", &ttl)
 			if err != nil || ttl < 0 {
@@ -159,7 +176,16 @@ func (s *Server) handleConnection(conn net.Conn) {
 				conn.Write([]byte("Error: Invalid TTL value\n"))
 				continue
 			}
-			s.ramCache.ExpireKey(key, time.Second*time.Duration(ttl))
+			if err := s.Wal.Append(NewExpireKey(key, time.Second*time.Duration(ttl))); err != nil {
+				globalLogger.Error("WAL Append error", zap.Error(err))
+				conn.Write([]byte(Failed + "\n"))
+				continue
+			}
+			if ttl == -1 {
+				s.ramCache.ExpireKey(key, time.Until(neverExpires))
+			} else {
+				s.ramCache.ExpireKey(key, time.Second*time.Duration(ttl))
+			}
 			conn.Write([]byte(Successfull + "\n"))
 		case string(TTL):
 			globalLogger.Info("TTL command received", zap.String("command", string(buff[:n])))
@@ -207,6 +233,11 @@ func (s *Server) handleConnection(conn net.Conn) {
 				continue
 			}
 			key := parts[1]
+			if err := s.Wal.Append(NewIncrement(key)); err != nil {
+				globalLogger.Error("WAL Append error", zap.Error(err))
+				conn.Write([]byte(Failed + "\n"))
+				continue
+			}
 			newv, err := s.ramCache.Increment(key)
 			if err != nil {
 				conn.Write([]byte("Error: " + err.Error() + "\n"))
@@ -221,6 +252,11 @@ func (s *Server) handleConnection(conn net.Conn) {
 				continue
 			}
 			key := parts[1]
+			if err := s.Wal.Append(NewDecrement(key)); err != nil {
+				globalLogger.Error("WAL Append error", zap.Error(err))
+				conn.Write([]byte(Failed + "\n"))
+				continue
+			}
 			newv, err := s.ramCache.Decrement(key)
 			if err != nil {
 				conn.Write([]byte("Error: " + err.Error() + "\n"))
@@ -235,7 +271,13 @@ func (s *Server) handleConnection(conn net.Conn) {
 				continue
 			}
 			key := parts[1]
-			suffix := parts[2]
+			// Join all parts from index 2 onwards to handle values with spaces
+			suffix := strings.Join(parts[2:], " ")
+			if err := s.Wal.Append(NewAppend(key, suffix)); err != nil {
+				globalLogger.Error("WAL Append error", zap.Error(err))
+				conn.Write([]byte(Failed + "\n"))
+				continue
+			}
 			err := s.ramCache.Append(key, suffix)
 			if err != nil {
 				conn.Write([]byte("Error: " + err.Error() + "\n"))
@@ -246,6 +288,11 @@ func (s *Server) handleConnection(conn net.Conn) {
 			globalLogger.Info("MSET command received", zap.String("command", string(buff[:n])))
 			//TODO: this is a bit more complicated since its a varadic function
 			toMap := decodePairs(parts[1:])
+			if err := s.Wal.Append(NewMset(toMap)); err != nil {
+				globalLogger.Error("WAL Append error", zap.Error(err))
+				conn.Write([]byte(Failed + "\n"))
+				continue
+			}
 			s.ramCache.MSet(toMap)
 			conn.Write([]byte(Successfull + "\n"))
 
@@ -258,20 +305,27 @@ func (s *Server) handleConnection(conn net.Conn) {
 			}
 			key := parts[1]
 			field := parts[2]
-			value := parts[3] // same issue as before, need to get the real data type here for now its fine TODO:
-			if len(parts) < 5 {
-				s.ramCache.HSet(key, field, value)
-				conn.Write([]byte(Successfull + "\n"))
+			value := trueType(parts[3]) // same issue as before, need to get the real data type here for now its fine TODO:
+
+			var ttl = neverExpireIntRepresentation
+			if len(parts) >= 5 {
+				_, err := fmt.Sscanf(parts[4], "%d", &ttl)
+				if err != nil || ttl < 0 {
+					globalLogger.Warn("Invalid TTL value", zap.String("command", string(buff[:n])))
+					conn.Write([]byte("Error: Invalid TTL value\n"))
+					continue
+				}
+			}
+			if err := s.Wal.Append(NewHSet(key, field, value, time.Second*time.Duration(ttl))); err != nil {
+				globalLogger.Error("WAL Append error", zap.Error(err))
+				conn.Write([]byte(Failed + "\n"))
 				continue
 			}
-			var ttl int
-			_, err := fmt.Sscanf(parts[4], "%d", &ttl)
-			if err != nil || ttl < 0 {
-				globalLogger.Warn("Invalid TTL value", zap.String("command", string(buff[:n])))
-				conn.Write([]byte("Error: Invalid TTL value\n"))
-				continue
+			if ttl == -1 {
+				s.ramCache.HSet(key, field, value, time.Until(neverExpires))
+			} else {
+				s.ramCache.HSet(key, field, value, time.Second*time.Duration(ttl))
 			}
-			s.ramCache.HSet(key, field, value, time.Second*time.Duration(ttl))
 			conn.Write([]byte(Successfull + "\n"))
 		case string(HGet):
 			globalLogger.Info("HGET command received", zap.String("command", string(buff[:n])))
@@ -307,6 +361,11 @@ func (s *Server) handleConnection(conn net.Conn) {
 			}
 			key := parts[1]
 			field := parts[2]
+			if err := s.Wal.Append(NewHDel(key, field)); err != nil {
+				globalLogger.Error("WAL Append error", zap.Error(err))
+				conn.Write([]byte(Failed + "\n"))
+				continue
+			}
 			s.ramCache.HDel(key, field)
 			conn.Write([]byte(Successfull + "\n"))
 		case string(HExists):
@@ -332,7 +391,12 @@ func (s *Server) handleConnection(conn net.Conn) {
 				continue
 			}
 			key := parts[1]
-			values := parts[2]
+			values := trueType(parts[2])
+			if err := s.Wal.Append(NewLPush(key, values)); err != nil {
+				globalLogger.Error("WAL Append error", zap.Error(err))
+				conn.Write([]byte(Failed + "\n"))
+				continue
+			}
 			s.ramCache.LPush(key, values)
 			conn.Write([]byte(Successfull + "\n"))
 		case string(RPush):
@@ -343,7 +407,12 @@ func (s *Server) handleConnection(conn net.Conn) {
 				continue
 			}
 			key := parts[1]
-			values := parts[2]
+			values := trueType(parts[2])
+			if err := s.Wal.Append(NewRPush(key, values)); err != nil {
+				globalLogger.Error("WAL Append error", zap.Error(err))
+				conn.Write([]byte(Failed + "\n"))
+				continue
+			}
 			s.ramCache.RPush(key, values)
 			conn.Write([]byte(Successfull + "\n"))
 		case string(LPop):
@@ -354,6 +423,11 @@ func (s *Server) handleConnection(conn net.Conn) {
 				continue
 			}
 			key := parts[1]
+			if err := s.Wal.Append(NewLPop(key)); err != nil {
+				globalLogger.Error("WAL Append error", zap.Error(err))
+				conn.Write([]byte(Failed + "\n"))
+				continue
+			}
 			v, err := s.ramCache.LPop(key)
 			if err != nil {
 				conn.Write([]byte("Failed LPop operation: " + err.Error() + "\n"))
@@ -368,6 +442,11 @@ func (s *Server) handleConnection(conn net.Conn) {
 				continue
 			}
 			key := parts[1]
+			if err := s.Wal.Append(NewRPop(key)); err != nil {
+				globalLogger.Error("WAL Append error", zap.Error(err))
+				conn.Write([]byte(Failed + "\n"))
+				continue
+			}
 			v, err := s.ramCache.RPop(key)
 			if err != nil {
 				conn.Write([]byte("Failed RPop operation: " + err.Error() + "\n"))
@@ -405,7 +484,12 @@ func (s *Server) handleConnection(conn net.Conn) {
 				continue
 			}
 			key := parts[1]
-			members := parts[2]
+			members := trueType(parts[2])
+			if err := s.Wal.Append(NewSAdd(key, members)); err != nil {
+				globalLogger.Error("WAL Append error", zap.Error(err))
+				conn.Write([]byte(Failed + "\n"))
+				continue
+			}
 			s.ramCache.SAdd(key, members)
 			conn.Write([]byte(Successfull + "\n"))
 		case string(SMembers):
@@ -427,6 +511,11 @@ func (s *Server) handleConnection(conn net.Conn) {
 			}
 			key := parts[1]
 			members := parts[2]
+			if err := s.Wal.Append(NewSRem(key, members)); err != nil {
+				globalLogger.Error("WAL Append error", zap.Error(err))
+				conn.Write([]byte(Failed + "\n"))
+				continue
+			}
 			s.ramCache.SRem(key, members)
 			conn.Write([]byte(Successfull + "\n"))
 		case string(SIsMember):
@@ -470,6 +559,11 @@ func (s *Server) handleConnection(conn net.Conn) {
 				continue
 			}
 			member := parts[3]
+			if err := s.Wal.Append(NewZAdd(key, score, member)); err != nil {
+				globalLogger.Error("WAL Append error", zap.Error(err))
+				conn.Write([]byte(Failed + "\n"))
+				continue
+			}
 			s.ramCache.ZAdd(key, score, member)
 			conn.Write([]byte(Successfull + "\n"))
 		case string(Zremove):
@@ -481,6 +575,11 @@ func (s *Server) handleConnection(conn net.Conn) {
 			}
 			key := parts[1]
 			member := parts[2]
+			if err := s.Wal.Append(NewZRemove(key, member)); err != nil {
+				globalLogger.Error("WAL Append error", zap.Error(err))
+				conn.Write([]byte(Failed + "\n"))
+				continue
+			}
 			err := s.ramCache.ZRemove(key, member)
 			if err != nil {
 				conn.Write([]byte("Failed ZRemove operation: " + err.Error() + "\n"))
@@ -593,8 +692,230 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}
 }
 
+// this will only be used for non-leader nodes, so we only need to handle write commands
+// SET , Del , Expire, INCR, DECR, APPEND, MSET, HSET, HDEL, LPush, RPush, LPop, RPop, SAdd, SRem, ZAdd, ZRemove
+func (s *Server) updateState(entry entryLog) error {
+	globalLogger.Debug("Replaying log entry", zap.String("entry", string(entry)))
+	parts := strings.Split(string(entry), " ")
+	switch parts[0] {
+	case string(SET):
+		if len(parts) < 3 {
+			return fmt.Errorf("invalid SET entry format: %s, correct format %s", string(entry), validCommands.Set)
+		}
+		key := parts[1]
+		value := trueType(parts[2])
+		ttl := parts[3]
+		var tllSeconds int
+		_, err := fmt.Sscanf(ttl, "%d", &tllSeconds)
+		if err != nil || tllSeconds < 0 {
+			globalLogger.Debug("Invalid TTL value in log", zap.String("log", string(entry)))
+			return fmt.Errorf("invalid TTL value in log: %s", ttl)
+		}
+
+		// Only pass TTL if it's greater than 0 (0 means no expiration)
+		if tllSeconds > 0 {
+			s.ramCache.SetKey(key, value, time.Second*time.Duration(tllSeconds))
+		} else {
+			s.ramCache.SetKey(key, value)
+		}
+	case string(Del):
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid DEL entry format: %s, correct format %s", string(entry), validCommands.Del)
+		}
+		key := parts[1]
+
+		s.ramCache.DeleteKey(key)
+	case string(Expire):
+		if len(parts) != 3 {
+			return fmt.Errorf("invalid EXPIRE entry format: %s, correct format %s", string(entry), validCommands.Expire)
+		}
+		key := parts[1]
+		var seconds int
+		_, err := fmt.Sscanf(parts[2], "%d", &seconds)
+		if err != nil {
+			return fmt.Errorf("invalid expire time in log: %s", parts[2])
+		}
+		s.ramCache.ExpireKey(key, time.Second*time.Duration(seconds))
+	case string(Incr):
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid INCR entry format: %s, correct format %s", string(entry), validCommands.Incr)
+		}
+		key := parts[1]
+		s.ramCache.Increment(key)
+	case string(Decr):
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid DECR entry format: %s, correct format %s", string(entry), validCommands.Decr)
+		}
+		key := parts[1]
+		s.ramCache.Decrement(key)
+	case string(Append):
+		if len(parts) < 3 {
+			return fmt.Errorf("invalid APPEND entry format: %s, correct format %s", string(entry), validCommands.Append)
+		}
+
+		// Use SplitN to handle suffixes with spaces correctly
+		parts := strings.SplitN(string(entry), " ", 3)
+		if len(parts) < 3 {
+			return fmt.Errorf("invalid APPEND entry format: %s", string(entry))
+		}
+		key := parts[1]
+		suffix := parts[2]
+		fmt.Printf("err from append %v\n ", s.ramCache.Append(key, suffix))
+		fmt.Printf("result of appending %s to %s: %v\n", suffix, key, s.ramCache.GetKey(key))
+	case string(Mset):
+		if len(parts) < 2 {
+			return fmt.Errorf("invalid MSET entry format: %s, correct format %s", string(entry), validCommands.Mset)
+		}
+		pairs := strings.Split(parts[1], "/")
+		for i := range pairs {
+			subPairs := strings.SplitN(pairs[i], "-", 2)
+			fmt.Printf("key: %s, value: %s\n", subPairs[0], subPairs[1])
+			pairs[i] = strings.TrimSpace(pairs[i])
+			s.ramCache.SetKey(subPairs[0], subPairs[1])
+		}
+	case string(HSet):
+		if len(parts) < 4 {
+			return fmt.Errorf("invalid HSET entry format: %s, correct format %s", string(entry), validCommands.HSet)
+		}
+		key := parts[1]
+		field := parts[2]
+		value := trueType(parts[3]) // TODO: need to parse the actual type here
+		var seconds int
+		_, err := fmt.Sscanf(parts[4], "%d", &seconds)
+		if err != nil {
+			return fmt.Errorf("invalid TTL value in log: %s", parts[4])
+		}
+		s.ramCache.HSet(key, field, value, time.Second*time.Duration(seconds))
+	case string(HDel):
+		if len(parts) != 3 {
+			return fmt.Errorf("invalid HDEL entry format: %s, correct format %s", string(entry), validCommands.HDel)
+		}
+		key := parts[1]
+		field := parts[2]
+		s.ramCache.HDel(key, field)
+	case string(LPush):
+		if len(parts) < 3 {
+			return fmt.Errorf("invalid LPUSH entry format: %s, correct format %s", string(entry), validCommands.LPush)
+		}
+		key := parts[1]
+		value := parts[2] // TODO: need to parse the actual type here
+		s.ramCache.LPush(key, value)
+	case string(RPush):
+		if len(parts) < 3 {
+			return fmt.Errorf("invalid RPUSH entry format: %s, correct format %s", string(entry), validCommands.RPush)
+		}
+
+		key := parts[1]
+		value := parts[2] // TODO: need to parse the actual type here
+		s.ramCache.RPush(key, value)
+	case string(LPop):
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid LPOP entry format: %s, correct format %s", string(entry), validCommands.LPop)
+		}
+
+		key := parts[1]
+		s.ramCache.LPop(key)
+	case string(RPop):
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid RPOP entry format: %s, correct format %s", string(entry), validCommands.RPop)
+		}
+		key := parts[1]
+		s.ramCache.RPop(key)
+	case string(SAdd):
+		if len(parts) < 3 {
+			return fmt.Errorf("invalid SADD entry format: %s, correct format %s", string(entry), validCommands.SAdd)
+		}
+		key := parts[1]
+		member := parts[2] // TODO: need to parse the actual type here
+		s.ramCache.SAdd(key, member)
+	case string(SRem):
+		if len(parts) < 3 {
+			return fmt.Errorf("invalid SREM entry format: %s, correct format %s", string(entry), validCommands.SRem)
+		}
+		key := parts[1]
+		member := parts[2] // TODO: need to parse the actual type here
+		s.ramCache.SRem(key, member)
+	case string(ZAdd):
+		if len(parts) < 4 {
+			return fmt.Errorf("invalid ZADD entry format: %s, correct format %s", string(entry), validCommands.ZAdd)
+		}
+
+		key := parts[1]
+		var score float64
+		_, err := fmt.Sscanf(parts[2], "%f", &score)
+		if err != nil {
+			return fmt.Errorf("invalid score in log: %s", parts[2])
+		}
+		member := parts[3]
+		s.ramCache.ZAdd(key, score, member)
+	case string(Zremove):
+		if len(parts) != 3 {
+			return fmt.Errorf("invalid ZREMOVE entry format: %s, correct format %s", string(entry), validCommands.Zremove)
+		}
+		key := parts[1]
+		member := parts[2]
+		s.ramCache.ZRemove(key, member)
+	default:
+		return fmt.Errorf("unknown command in log: %s", parts[0])
+	}
+	return nil
+}
+
+// dest : ip:port of followers nodes
+// message : message to be sent
+// concensus : number of nodes that need to ack the message
+// timeout : time to wait for acks
+// returns true if concensus is reached, false otherwise
+func syncExternal(dest []followerInfo, message []byte, concensus uint, timeout time.Duration) bool {
+	fmt.Printf("writing %v to followers %v, Need %d acks to be considered succesfull within %v seconds\n", string(message), dest, concensus, timeout.Seconds())
+
+	return false
+}
+
+// key-value
+func decodePairs(pairs []string) map[string]any {
+	var toMap = make(map[string]any)
+	for i := range pairs {
+		pairs[i] = strings.TrimSpace(pairs[i])
+		pieces := strings.SplitN(pairs[i], "-", 2)
+		if len(pieces) != 2 {
+			continue
+		}
+		key := pieces[0]
+		value := pieces[1] // TODO: need to parse the actual type here
+		toMap[key] = value
+	}
+	return toMap
+}
+
+func trueType(s string) interface{} {
+	// Check if string is quoted - if so, remove quotes and return as string
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		return s[1 : len(s)-1] // remove quotes and return as string
+	}
+	// Try boolean first
+	if s == "true" {
+		return true
+	}
+	if s == "false" {
+		return false
+	}
+
+	// Try int64
+	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return i
+	}
+
+	// Try float64
+	if f, err := strconv.ParseFloat(s, 64); err == nil {
+		return f
+	}
+
+	// Default to string
+	return s
+}
+
 type correctCommandFormat struct {
-	//TODO:
 	Ping  string
 	Echo  string
 	Close string
@@ -682,215 +1003,4 @@ func newValidCMD() correctCommandFormat {
 		Zrevrank: "ZREVRANK key member",
 		Zscore:   "ZSCORE key member",
 	}
-}
-
-// this will only be used for non-leader nodes, so we only need to handle write commands
-// SET , Del , Expire, INCR, DECR, APPEND, MSET, HSET, HDEL, LPush, RPush, LPop, RPop, SAdd, SRem, ZAdd, ZRemove
-func (s *Server) updateState(entry entryLog) error {
-	globalLogger.Debug("Replaying log entry", zap.String("entry", string(entry)))
-	parts := strings.Split(string(entry), " ")
-	switch parts[0] {
-	case string(SET):
-		if len(parts) < 3 {
-			return fmt.Errorf("invalid SET entry format: %s, correct format %s", string(entry), validCommands.Set)
-		}
-		key := parts[1]
-		value := trueType(parts[2]) // TODO: need to parse the actual type here
-		ttl := parts[3]
-		var tllSeconds int
-		_, err := fmt.Sscanf(ttl, "%d", &tllSeconds)
-		if err != nil || tllSeconds < 0 {
-			globalLogger.Debug("Invalid TTL value in log", zap.String("log", string(entry)))
-			return fmt.Errorf("invalid TTL value in log: %s", ttl)
-		}
-
-		// Only pass TTL if it's greater than 0 (0 means no expiration)
-		if tllSeconds > 0 {
-			s.ramCache.SetKey(key, value, time.Second*time.Duration(tllSeconds))
-		} else {
-			s.ramCache.SetKey(key, value)
-		}
-	case string(Del):
-		if len(parts) != 2 {
-			return fmt.Errorf("invalid DEL entry format: %s, correct format %s", string(entry), validCommands.Del)
-		}
-		key := parts[1]
-		s.ramCache.DeleteKey(key)
-	case string(Expire):
-		if len(parts) != 3 {
-			return fmt.Errorf("invalid EXPIRE entry format: %s, correct format %s", string(entry), validCommands.Expire)
-		}
-		key := parts[1]
-		var seconds int
-		_, err := fmt.Sscanf(parts[2], "%d", &seconds)
-		if err != nil {
-			return fmt.Errorf("invalid expire time in log: %s", parts[2])
-		}
-		s.ramCache.ExpireKey(key, time.Second*time.Duration(seconds))
-	case string(Incr):
-		if len(parts) != 2 {
-			return fmt.Errorf("invalid INCR entry format: %s, correct format %s", string(entry), validCommands.Incr)
-		}
-		key := parts[1]
-		s.ramCache.Increment(key)
-	case string(Decr):
-		if len(parts) != 2 {
-			return fmt.Errorf("invalid DECR entry format: %s, correct format %s", string(entry), validCommands.Decr)
-		}
-		key := parts[1]
-		s.ramCache.Decrement(key)
-	case string(Append):
-		if len(parts) < 3 {
-			return fmt.Errorf("invalid APPEND entry format: %s, correct format %s", string(entry), validCommands.Append)
-		}
-
-		// Use SplitN to handle suffixes with spaces correctly
-		parts := strings.SplitN(string(entry), " ", 3)
-		if len(parts) < 3 {
-			return fmt.Errorf("invalid APPEND entry format: %s", string(entry))
-		}
-		key := parts[1]
-		suffix := parts[2]
-		fmt.Printf("err from append %v\n ", s.ramCache.Append(key, suffix))
-		fmt.Printf("result of appending %s to %s: %v\n", suffix, key, s.ramCache.GetKey(key))
-	case string(Mset):
-		if len(parts) < 2 {
-			return fmt.Errorf("invalid MSET entry format: %s, correct format %s", string(entry), validCommands.Mset)
-		}
-		pairs := strings.Split(parts[1], "/")
-		for i := range pairs {
-			subPairs := strings.SplitN(pairs[i], "-", 2)
-			fmt.Printf("key: %s, value: %s\n", subPairs[0], subPairs[1])
-			pairs[i] = strings.TrimSpace(pairs[i])
-			s.ramCache.SetKey(subPairs[0], subPairs[1])
-		}
-	case string(HSet):
-		if len(parts) < 4 {
-			return fmt.Errorf("invalid HSET entry format: %s, correct format %s", string(entry), validCommands.HSet)
-		}
-		key := parts[1]
-		field := parts[2]
-		value := parts[3] // TODO: need to parse the actual type here
-		var seconds int
-		_, err := fmt.Sscanf(parts[4], "%d", &seconds)
-		if err != nil {
-			return fmt.Errorf("invalid TTL value in log: %s", parts[4])
-		}
-		s.ramCache.HSet(key, field, value, time.Second*time.Duration(seconds))
-	case string(HDel):
-		if len(parts) != 3 {
-			return fmt.Errorf("invalid HDEL entry format: %s, correct format %s", string(entry), validCommands.HDel)
-		}
-		key := parts[1]
-		field := parts[2]
-		s.ramCache.HDel(key, field)
-	case string(LPush):
-		if len(parts) < 3 {
-			return fmt.Errorf("invalid LPUSH entry format: %s, correct format %s", string(entry), validCommands.LPush)
-		}
-		key := parts[1]
-		value := parts[2] // TODO: need to parse the actual type here
-		s.ramCache.LPush(key, value)
-	case string(RPush):
-		if len(parts) < 3 {
-			return fmt.Errorf("invalid RPUSH entry format: %s, correct format %s", string(entry), validCommands.RPush)
-		}
-
-		key := parts[1]
-		value := parts[2] // TODO: need to parse the actual type here
-		s.ramCache.RPush(key, value)
-	case string(LPop):
-		if len(parts) != 2 {
-			return fmt.Errorf("invalid LPOP entry format: %s, correct format %s", string(entry), validCommands.LPop)
-		}
-
-		key := parts[1]
-		s.ramCache.LPop(key)
-	case string(RPop):
-		if len(parts) != 2 {
-			return fmt.Errorf("invalid RPOP entry format: %s, correct format %s", string(entry), validCommands.RPop)
-		}
-		key := parts[1]
-		s.ramCache.RPop(key)
-	case string(SAdd):
-		if len(parts) < 3 {
-			return fmt.Errorf("invalid SADD entry format: %s, correct format %s", string(entry), validCommands.SAdd)
-		}
-		key := parts[1]
-		member := parts[2] // TODO: need to parse the actual type here
-		s.ramCache.SAdd(key, member)
-	case string(SRem):
-		if len(parts) < 3 {
-			return fmt.Errorf("invalid SREM entry format: %s, correct format %s", string(entry), validCommands.SRem)
-		}
-		key := parts[1]
-		member := parts[2] // TODO: need to parse the actual type here
-		s.ramCache.SRem(key, member)
-	case string(ZAdd):
-		if len(parts) < 4 {
-			return fmt.Errorf("invalid ZADD entry format: %s, correct format %s", string(entry), validCommands.ZAdd)
-		}
-
-		key := parts[1]
-		var score float64
-		_, err := fmt.Sscanf(parts[2], "%f", &score)
-		if err != nil {
-			return fmt.Errorf("invalid score in log: %s", parts[2])
-		}
-		member := parts[3]
-		s.ramCache.ZAdd(key, score, member)
-	case string(Zremove):
-		if len(parts) != 3 {
-			return fmt.Errorf("invalid ZREMOVE entry format: %s, correct format %s", string(entry), validCommands.Zremove)
-		}
-		key := parts[1]
-		member := parts[2]
-		s.ramCache.ZRemove(key, member)
-	default:
-		return fmt.Errorf("unknown command in log: %s", parts[0])
-	}
-	return nil
-}
-
-// key-value
-func decodePairs(pairs []string) map[string]any {
-	var toMap = make(map[string]any)
-	for i := range pairs {
-		pairs[i] = strings.TrimSpace(pairs[i])
-		pieces := strings.SplitN(pairs[i], "-", 2)
-		if len(pieces) != 2 {
-			continue
-		}
-		key := pieces[0]
-		value := pieces[1] // TODO: need to parse the actual type here
-		toMap[key] = value
-	}
-	return toMap
-}
-
-func trueType(s string) interface{} {
-	// Check if string is quoted - if so, remove quotes and return as string
-	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
-		return s[1 : len(s)-1] // remove quotes and return as string
-	}
-	// Try boolean first
-	if s == "true" {
-		return true
-	}
-	if s == "false" {
-		return false
-	}
-
-	// Try int64
-	if i, err := strconv.ParseInt(s, 10, 64); err == nil {
-		return i
-	}
-
-	// Try float64
-	if f, err := strconv.ParseFloat(s, 64); err == nil {
-		return f
-	}
-
-	// Default to string
-	return s
 }
