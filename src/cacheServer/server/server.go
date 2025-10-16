@@ -292,91 +292,19 @@ func (s *Server) Stop() error {
 	globalLogger.Info("Stopping server on", zap.String("address", fmt.Sprintf("%s:%d", s.config.Address, s.config.Port)))
 	return nil
 }
-func (s *Server) InterServerCommunications(isHost bool) {
-
-	// Start inter-server connection immediately instead of waiting for ticker
-	globalLogger.Debug("Starting initial InterServer connection")
-	s.startInterServerConnection(isHost)
-
-}
-
-func (s *Server) startInterServerConnection(isHost bool) chan struct{} {
-	stopSignal := make(chan struct{})
-
-	go func() {
-		// For now, let's use 0.0.0.0 to bind to all interfaces
-		// This should work if your router/firewall is configured correctly
-		bindAddr := "0.0.0.0"
-
-		addr := fmt.Sprintf("%s:%d", bindAddr, s.config.Port+1)
-		globalLogger.Info("Inter Server communications is @ ", zap.String("address", addr))
-
-		healthListener, err := net.Listen("tcp4", addr)
-		if err != nil {
-			globalLogger.Warn("Failed to start health check listener", zap.Error(err))
-			return
-		}
-		defer healthListener.Close()
-
-		if isHost {
-			globalLogger.Info("Starting Inter Server communications as Leader")
-		} else {
-			globalLogger.Info("Starting Inter Server communications as Follower")
-		}
-		for {
-			select {
-			case <-stopSignal:
-				globalLogger.Debug("Stopping InterServer connection")
-				return
-			default:
-				// Set a timeout for Accept to make it non-blocking
-				healthListener.(*net.TCPListener).SetDeadline(time.Now().Add(1 * time.Second))
-
-				conn, err := healthListener.Accept()
-				if err != nil {
-					// Check if it's a timeout (normal) or real error
-					if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-						continue // Just a timeout, continue checking for stop signal
-					}
-					if errors.Is(err, net.ErrClosed) {
-						return
-					}
-					globalLogger.Warn("(Inter Server Communications) Failed to accept connection", zap.Error(err))
-					continue
-				}
-
-				// Handle the connection
-				go func(c net.Conn) {
-					defer c.Close()
-					status := "OK"
-					if !s.isLive {
-						status = "NOT OK"
-					}
-					buff := make([]byte, 256)
-					n, err := c.Read(buff)
-					if err != nil {
-						globalLogger.Warn("Error reading from connection", zap.Error(err))
-						return
-					}
-					content := string(buff[:n])
-					globalLogger.Info("Received message from InterServer comms", zap.String("content", content))
-					c.Write([]byte(fmt.Sprintf("Health Status: %s\n", status)))
-				}(conn)
-			}
-		}
-	}()
-
-	return stopSignal
-}
 
 func (s *Server) exportStats() {
-	http.HandleFunc(s.config.monitoring.MetricsPath, s.Metrics)
+	// Create a new ServeMux for this server instance to avoid conflicts
+	// application code wise this is unimportant but test are strcutred poorly right now, easiest fix
+	mux := http.NewServeMux()
+	mux.HandleFunc(s.config.monitoring.MetricsPath, s.Metrics)
+
 	go func() {
 		var alreadyTried = false
 		for s.isLive {
 			endpoint := fmt.Sprintf(":%d", s.config.monitoring.MetricsPort)
 			globalLogger.Info("Starting metrics server on", zap.String("endpoint", endpoint))
-			if err := http.ListenAndServe(endpoint, nil); err != nil {
+			if err := http.ListenAndServe(endpoint, mux); err != nil {
 				globalLogger.Warn("Error starting metrics server", zap.Error(err))
 			}
 			time.Sleep(s.config.timeout) // Retry after a delay if it fails

@@ -1,10 +1,12 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -17,6 +19,7 @@ var (
 
 type baseCommands string
 
+// TODO split this into cmd and Inter server cmd
 const (
 	// server commands
 	ServerPrefix baseCommands = "SS" // RapidStore command prefix
@@ -128,8 +131,12 @@ func (s *Server) handleConnection(conn net.Conn) {
 			} else {
 				s.ramCache.SetKey(key, value, time.Second*time.Duration(ttl))
 			}
-			syncExternal(s.config.election.followerInfo, content, 1, time.Second*2)
-			conn.Write([]byte(Successfull + "\n"))
+			// should we return failed here? we can always resend later
+			if syncExternal(s.config.election.followerInfo, content, 1, time.Second*5) {
+				conn.Write([]byte(Successfull + "\n"))
+			} else {
+				conn.Write([]byte(Failed + "\n"))
+			}
 		case string(GET):
 			globalLogger.Info("GET command received", zap.String("command", string(buff[:n])))
 			if len(parts) != 2 {
@@ -707,7 +714,7 @@ func (s *Server) updateState(entry entryLog) error {
 		ttl := parts[3]
 		var tllSeconds int
 		_, err := fmt.Sscanf(ttl, "%d", &tllSeconds)
-		if err != nil || tllSeconds < 0 {
+		if err != nil {
 			globalLogger.Debug("Invalid TTL value in log", zap.String("log", string(entry)))
 			return fmt.Errorf("invalid TTL value in log: %s", ttl)
 		}
@@ -716,7 +723,7 @@ func (s *Server) updateState(entry entryLog) error {
 		if tllSeconds > 0 {
 			s.ramCache.SetKey(key, value, time.Second*time.Duration(tllSeconds))
 		} else {
-			s.ramCache.SetKey(key, value)
+			s.ramCache.SetKey(key, value, time.Until(neverExpires))
 		}
 	case string(Del):
 		if len(parts) != 2 {
@@ -784,6 +791,10 @@ func (s *Server) updateState(entry entryLog) error {
 		_, err := fmt.Sscanf(parts[4], "%d", &seconds)
 		if err != nil {
 			return fmt.Errorf("invalid TTL value in log: %s", parts[4])
+		}
+		if seconds == -1 {
+			s.ramCache.HSet(key, field, value, time.Until(neverExpires))
+			return nil
 		}
 		s.ramCache.HSet(key, field, value, time.Second*time.Duration(seconds))
 	case string(HDel):
@@ -866,10 +877,147 @@ func (s *Server) updateState(entry entryLog) error {
 // concensus : number of nodes that need to ack the message
 // timeout : time to wait for acks
 // returns true if concensus is reached, false otherwise
-func syncExternal(dest []followerInfo, message []byte, concensus uint, timeout time.Duration) bool {
-	fmt.Printf("writing %v to followers %v, Need %d acks to be considered succesfull within %v seconds\n", string(message), dest, concensus, timeout.Seconds())
+func syncExternal(dest []followerInfo, message []byte, consensus uint, timeout time.Duration) bool {
+	fmt.Printf("writing %v to followers %v, Need %d acks to be considered succesfull within %v seconds\n", string(message), dest, consensus, timeout.Seconds())
+	if len(dest) == 0 {
+		return true
+	}
+	if consensus > uint(len(dest)) {
+		consensus = uint(len(dest))
+	}
+	var curAck uint32
+	done := make(chan struct{}, len(dest))
+	for _, nodeElement := range dest {
+		go func(node followerInfo) {
+			defer func() { done <- struct{}{} }()
+			buff := make([]byte, 256)
+			if _, err := node.c.Write(message); err != nil {
+				fmt.Printf("failed to write to %s:%s %v\n", node.address, node.port, err)
+				return
+			}
 
-	return false
+			_ = node.c.SetReadDeadline(time.Now().Add(timeout - 1*time.Second))
+
+			n, err := node.c.Read(buff)
+			if err != nil {
+				fmt.Printf("read error from %s:%s %v\n", node.address, node.port, err)
+				return
+			}
+			nodeResponse := buff[:n]
+			fmt.Println("Follower replied: ", string(nodeResponse))
+			if strings.Contains(string(nodeResponse), "Successful") {
+				fmt.Println("follower succesfully received the message")
+				atomic.AddUint32(&curAck, 1)
+			}
+		}(nodeElement)
+	}
+
+	// Wait until either enough acks or timeout
+	expire := time.After(timeout)
+	for {
+		select {
+		case <-done:
+			if atomic.LoadUint32(&curAck) >= uint32(consensus) {
+				return true
+			}
+			// if all replies are back but not enough acks, fail fast
+			if int(atomic.LoadUint32(&curAck))+len(done) >= len(dest) {
+				return false
+			}
+		case <-expire:
+			globalLogger.Warn("Consensus timeout reached", zap.Uint32("currentAcks", atomic.LoadUint32(&curAck)), zap.Uint("neededAcks", consensus))
+			return atomic.LoadUint32(&curAck) >= uint32(consensus)
+		}
+	}
+}
+func (s *Server) InterServerCommunications(isHost bool) {
+
+	// Start inter-server connection immediately instead of waiting for ticker
+	globalLogger.Debug("Starting initial InterServer connection")
+	s.startInterServerConnection(isHost)
+
+}
+
+func (s *Server) startInterServerConnection(isHost bool) chan struct{} {
+	stopSignal := make(chan struct{})
+
+	go func() {
+
+		bindAddr := "0.0.0.0"
+
+		addr := fmt.Sprintf("%s:%d", bindAddr, s.config.Port+1)
+		globalLogger.Info("Inter Server communications is @ ", zap.String("address", addr))
+
+		healthListener, err := net.Listen("tcp4", addr)
+		if err != nil {
+			globalLogger.Warn("Failed to start health check listener", zap.Error(err))
+			return
+		}
+		defer healthListener.Close()
+
+		if isHost {
+			globalLogger.Info("Starting Inter Server communications as Leader")
+		} else {
+			globalLogger.Info("Starting Inter Server communications as Follower")
+		}
+		for {
+			select {
+			case <-stopSignal:
+				globalLogger.Debug("Stopping InterServer connection")
+				return
+			default:
+				// Set a timeout for Accept to make it non-blocking
+				healthListener.(*net.TCPListener).SetDeadline(time.Now().Add(1 * time.Second))
+
+				conn, err := healthListener.Accept()
+				if err != nil {
+					// Check if it's a timeout (normal) or real error
+					if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+						continue // Just a timeout, continue checking for stop signal
+					}
+					if errors.Is(err, net.ErrClosed) {
+						return
+					}
+					globalLogger.Warn("(Inter Server Communications) Failed to accept connection", zap.Error(err))
+					continue
+				}
+
+				// Handle the connection
+				go func(c net.Conn) {
+					defer c.Close()
+					status := "OK"
+					if !s.isLive {
+						status = "NOT OK"
+					}
+					buff := make([]byte, 256)
+					n, err := c.Read(buff)
+					if err != nil {
+						globalLogger.Warn("Error reading from connection", zap.Error(err))
+						return
+					}
+					content := string(buff[:n])
+					switch content {
+					case string(PING):
+						globalLogger.Info("(1) Received PING message from InterServer comms", zap.String("content", content))
+						c.Write([]byte("PONG\n"))
+					case string(ECHO):
+						globalLogger.Info("(1) Received ECHO message from InterServer comms", zap.String("content", content))
+						c.Write([]byte(fmt.Sprintf("Health Status: %s\n", status)))
+					default:
+						globalLogger.Info("(2) Received  message from InterServer comms", zap.String("content", content))
+						if e := s.updateState(entryLog(content)); e != nil {
+							globalLogger.Error("Failed to update state from inter-server message", zap.Error(e))
+							c.Write([]byte("Failed\n"))
+							return
+						}
+						c.Write([]byte("Successful\n"))
+					}
+				}(conn)
+			}
+		}
+	}()
+
+	return stopSignal
 }
 
 // key-value

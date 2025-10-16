@@ -498,7 +498,8 @@ func getExternalIP() (string, error) {
 
 		ip := strings.TrimSpace(string(body))
 		if net.ParseIP(ip) != nil {
-			return ip, nil
+			// TODO: Update this later
+			return "0.0.0.0", nil
 		}
 	}
 
@@ -548,18 +549,14 @@ func NewFollowers(zkConn *zk.Conn, path string) []followerInfo {
 			port := strconv.Itoa(intPort)
 
 			globalLogger.Info("Found follower", zap.String("ip", ip), zap.String("port", port))
-			time.Sleep(1000 * time.Millisecond) // slight delay to avoid race conditions
-			var conn net.Conn
-			for attempts := 0; attempts < 3; attempts++ {
-				c, err := NewConnectionToNode(ip, port)
-				if err == nil {
-					conn = c
-					// Success
-					break
-				}
-				if attempts < 2 {
-					time.Sleep(time.Duration(attempts+1) * time.Second)
-				}
+			conn, err := NewConnectionToNode(ip, port)
+			if err != nil {
+				globalLogger.Info("Failed to connect to follower", zap.String("ip", ip), zap.String("port", port), zap.Error(err))
+			}
+			if conn != nil {
+				globalLogger.Info("Successfully connected to follower", zap.String("ip", ip), zap.String("port", port))
+			} else {
+				globalLogger.Info("Failed to connect to follower after 3 attempts", zap.String("ip", ip), zap.String("port", port))
 			}
 			resultFollowerInfo = append(resultFollowerInfo, followerInfo{
 				address: ip,
