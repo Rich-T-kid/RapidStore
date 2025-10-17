@@ -299,7 +299,6 @@ func (k *keyStore) validKey(key string, valuePair GeneralValue) bool {
 }
 func (k *keyStore) SetKey(key string, value any, ttl ...time.Duration) {
 	var v GeneralValue
-	fmt.Printf("Setting key: %s with value: %v and TTL: %v\n", key, value, ttl)
 	if len(ttl) > 0 {
 		v = GeneralValue{
 			Value: value,
@@ -439,7 +438,7 @@ func (k *keyStore) Append(key string, suffix string) error {
 	}
 
 	v.Value = strVal + suffix
-	fmt.Printf("After appending, key: %s has value: %s\n", key, v.Value)
+	fmt.Printf("After appending, key: %s has value: %s\n", key, strVal)
 	k.internalData[key] = v
 
 	return nil

@@ -232,7 +232,7 @@ func NewServer(options ...serverOption) *Server {
 	var s = &Server{
 		config:         config,
 		ramCache:       memorystore.NewCache(),
-		Wal:            GetWAL(),
+		Wal:            newWAL(config.persistence.WALPath, uint32(bufferSize), config.persistence.WALSyncInterval),
 		dynamicMessage: make(chan internalServerMSg, 1), // Buffered channel to avoid blocking
 		close:          make(chan struct{}),
 		isLive:         false,
@@ -241,12 +241,14 @@ func NewServer(options ...serverOption) *Server {
 	if err != nil {
 		panic(fmt.Sprintf("Error initializing leader election: %v\n", err))
 	}
+	go s.InterServerCommunications(s.config.election.isLeader)
 	connAddr := fmt.Sprintf("%s:%d", s.config.Address, s.config.Port)
 	globalLogger.Info("Server init config:", zap.String("address", connAddr))
+	// expose metrics via http endpoint
+	go s.exportStats()
 	return s
 }
 func (s *Server) Start() error {
-	// Implementation to start the server
 	s.ramCache = memorystore.NewCache()
 	s.close = make(chan struct{})
 	list, err := net.Listen("tcp", fmt.Sprintf("%s:%d", s.config.Address, s.config.Port))
@@ -258,10 +260,6 @@ func (s *Server) Start() error {
 	// background goroutine
 	go func() {
 		s.isLive = true
-		// used to talk to other servers , (Leaders, followers) for healthchecks, replication logs, ect.
-		go s.InterServerCommunications()
-		// expose metrics via http endpoint
-		go s.exportStats()
 		<-s.close
 		list.Close()
 	}()
@@ -294,101 +292,19 @@ func (s *Server) Stop() error {
 	globalLogger.Info("Stopping server on", zap.String("address", fmt.Sprintf("%s:%d", s.config.Address, s.config.Port)))
 	return nil
 }
-func (s *Server) InterServerCommunications() {
-	var isFirstTime = true
-	var currentConnection chan struct{} // To track running connection
-
-	for {
-		select {
-		case msg := <-s.dynamicMessage:
-			if msg == restartLeaderStream {
-				globalLogger.Debug("Received message to restart InterServer connection due to leader change")
-				// Stop current connection if running
-				if currentConnection != nil {
-					close(currentConnection)
-				}
-				// Start new connection with updated leader info
-				currentConnection = s.startInterServerConnection()
-			}
-		case <-s.close:
-			globalLogger.Debug("InterServer communications stopped")
-			if currentConnection != nil {
-				close(currentConnection)
-			}
-			return
-		case <-time.After(s.config.idleTimeout):
-			// First time setup
-			if isFirstTime {
-				globalLogger.Debug("Starting InterServer communications for first time")
-				currentConnection = s.startInterServerConnection()
-				isFirstTime = false
-			}
-			// Small sleep to prevent busy waiting
-			time.Sleep(s.config.idleTimeout)
-		}
-	}
-}
-
-func (s *Server) startInterServerConnection() chan struct{} {
-	stopSignal := make(chan struct{})
-
-	go func() {
-		addr := fmt.Sprintf("%s:%s", s.config.election.leaderInfo.Address, s.config.election.leaderInfo.Port)
-		globalLogger.Info("Starting health check listener on", zap.String("address", addr))
-
-		healthListener, err := net.Listen("tcp", addr)
-		if err != nil {
-			globalLogger.Warn("Failed to start health check listener", zap.Error(err))
-			return
-		}
-		defer healthListener.Close()
-
-		for {
-			select {
-			case <-stopSignal:
-				globalLogger.Debug("Stopping InterServer connection")
-				return
-			default:
-				// Set a timeout for Accept to make it non-blocking
-				healthListener.(*net.TCPListener).SetDeadline(time.Now().Add(1 * time.Second))
-
-				conn, err := healthListener.Accept()
-				if err != nil {
-					// Check if it's a timeout (normal) or real error
-					if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-						continue // Just a timeout, continue checking for stop signal
-					}
-					if errors.Is(err, net.ErrClosed) {
-						return
-					}
-					globalLogger.Warn("(Inter Server Communications) Failed to accept connection", zap.Error(err))
-					continue
-				}
-
-				// Handle the connection
-				go func(c net.Conn) {
-					defer c.Close()
-					status := "OK"
-					if !s.isLive {
-						status = "NOT OK"
-					}
-					c.Write([]byte(fmt.Sprintf("Health Status: %s\n", status)))
-				}(conn)
-			}
-		}
-	}()
-
-	return stopSignal
-}
 
 func (s *Server) exportStats() {
-	http.HandleFunc(s.config.monitoring.MetricsPath, s.Metrics)
+	// Create a new ServeMux for this server instance to avoid conflicts
+	// application code wise this is unimportant but test are strcutred poorly right now, easiest fix
+	mux := http.NewServeMux()
+	mux.HandleFunc(s.config.monitoring.MetricsPath, s.Metrics)
+
 	go func() {
 		var alreadyTried = false
 		for s.isLive {
 			endpoint := fmt.Sprintf(":%d", s.config.monitoring.MetricsPort)
 			globalLogger.Info("Starting metrics server on", zap.String("endpoint", endpoint))
-			if err := http.ListenAndServe(endpoint, nil); err != nil {
+			if err := http.ListenAndServe(endpoint, mux); err != nil {
 				globalLogger.Warn("Error starting metrics server", zap.Error(err))
 			}
 			time.Sleep(s.config.timeout) // Retry after a delay if it fails
