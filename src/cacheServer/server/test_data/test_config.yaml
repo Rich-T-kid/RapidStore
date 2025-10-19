@@ -6,6 +6,8 @@ ServerConfig:
   timeout: "35s"
   idle_timeout: "450s"
 PersistenceConfig:
+  consistancy_type: "Eventual"
+  replication_timeout: "2s"
   wal_sync_interval: "1.5s"
   wal_path: "./dev_wal.log"
   wal_max_size: 8388608
@@ -20,4 +22,5 @@ ElectionConfig:
     - "dev2:2181"
   election_path: "/dev/leader"
   node_id: "dev-node-1"
-  timeout: "7s"
+  election_timeout: "7s"
+  heartbeat_interval: "1.5s"

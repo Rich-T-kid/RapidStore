@@ -38,12 +38,14 @@ Core server settings that control basic network and connection behavior.
 - `timeout` (duration string): Client connection timeout (e.g., "30s", "5m")
 - `idle_timeout` (duration string): How long to keep idle connections open (e.g., "300s", "10m")
 
-### 2. Persistence Configuration (`PersistanceConfig`)
+### 2. Persistence Configuration (`PersistenceConfig`)
 
-Settings for Write-Ahead Logging (WAL) and data persistence.
+Settings for Write-Ahead Logging (WAL), data persistence, and replication consistency.
 
 ```json
-"PersistanceConfig": {
+"PersistenceConfig": {
+    "consistancy_type": "Strong",
+    "replication_timeout": "2s",
     "wal_sync_interval": "1s",
     "wal_path": "./wal.log",
     "wal_max_size": 10485760
@@ -51,6 +53,14 @@ Settings for Write-Ahead Logging (WAL) and data persistence.
 ```
 
 **Fields:**
+- `consistancy_type` (string): Data consistency level for replication
+  - `"Strong"` - All replicas must acknowledge writes (highest consistency, lower performance)
+  - `"Quorum"` - Majority of replicas must acknowledge writes (balanced consistency/performance)  
+  - `"Eventual"` - Write to leader, replicas sync eventually (highest performance, eventual consistency)
+  - `"Minimal"` - Write to leader only (fastest, least consistent)
+- `replication_timeout` (duration string): Maximum time to wait for replica acknowledgments (e.g., "2s", "500ms")
+  - Lower values = faster timeout detection, may cause false timeouts under load
+  - Higher values = more tolerance for slow networks, slower failure detection
 - `wal_sync_interval` (duration string): How often to sync WAL to disk (e.g., "1s", "500ms")
   - Lower values = better durability, higher I/O overhead
   - Higher values = better performance, potential data loss on crash
@@ -81,14 +91,15 @@ Settings for metrics collection, monitoring endpoints, and logging.
 
 ### 4. Election Configuration (`ElectionConfig`)
 
-Settings for leader election and distributed coordination using Apache Zookeeper.
+Settings for leader election, distributed coordination using Apache Zookeeper, and cluster heartbeat behavior.
 
 ```json
 "ElectionConfig": {
     "zookeeper_servers": ["localhost:2181"],
     "election_path": "/rapidstore/leader",
     "node_id": "node-1",
-    "timeout": "5s"
+    "election_timeout": "5s",
+    "heartbeat_interval": "1s"
 }
 ```
 
@@ -102,9 +113,12 @@ Settings for leader election and distributed coordination using Apache Zookeeper
 - `node_id` (string): Unique identifier for this server instance
   - Must be unique across all nodes in the cluster
   - Used for logging and cluster identification
-- `timeout` (duration string): Heartbeat timeout for leader election
-  - Lower values = faster failure detection, more network chatter
+- `election_timeout` (duration string): Timeout for leader election process
+  - Lower values = faster leader election, more sensitive to network delays
   - Higher values = more stable in network partitions, slower failover
+- `heartbeat_interval` (duration string): How often the leader sends heartbeats to followers
+  - Lower values = faster failure detection, more network traffic
+  - Higher values = less network overhead, slower failure detection
 
 ## Example Configurations
 
@@ -119,7 +133,9 @@ Settings for leader election and distributed coordination using Apache Zookeeper
         "timeout": "30s",
         "idle_timeout": "300s"
     },
-    "PersistanceConfig": {
+    "PersistenceConfig": {
+        "consistancy_type": "Eventual",
+        "replication_timeout": "2s",
         "wal_sync_interval": "1s",
         "wal_path": "./dev_wal.log",
         "wal_max_size": 5242880
@@ -134,7 +150,8 @@ Settings for leader election and distributed coordination using Apache Zookeeper
         "zookeeper_servers": ["localhost:2181"],
         "election_path": "/dev/rapidstore/leader",
         "node_id": "dev-node-1",
-        "timeout": "5s"
+        "election_timeout": "5s",
+        "heartbeat_interval": "1s"
     }
 }
 ```
@@ -149,7 +166,9 @@ serverConfig:
   timeout: "60s"
   idle_timeout: "900s"
 
-PersistanceConfig:
+PersistenceConfig:
+  consistancy_type: "Strong"
+  replication_timeout: "1s"
   wal_sync_interval: "500ms"
   wal_path: "/var/lib/rapidstore/wal.log"
   wal_max_size: 104857600  # 100MB
@@ -167,8 +186,55 @@ ElectionConfig:
     - "zk3.prod.example.com:2181"
   election_path: "/production/rapidstore/leader"
   node_id: "prod-node-01"
-  timeout: "10s"
+  election_timeout: "10s"
+  heartbeat_interval: "2s"
 ```
+
+## Consistency Types Explained
+
+The `consistancy_type` field in `PersistenceConfig` controls how RapidStore handles data replication across the cluster. Each type offers different trade-offs between consistency, availability, and performance:
+
+### Strong Consistency
+- **Description**: All replica nodes must acknowledge writes before the operation is considered complete
+- **Use Case**: Financial systems, critical data where consistency is paramount
+- **Trade-offs**: 
+  - ✅ Highest data consistency guarantee
+  - ✅ No risk of reading stale data
+  - ❌ Slower write performance
+  - ❌ Lower availability if replica nodes are down
+- **Example**: Banking transactions, inventory management
+
+### Quorum Consistency  
+- **Description**: Majority of replica nodes (>50%) must acknowledge writes
+- **Use Case**: Balanced systems requiring good consistency with acceptable performance
+- **Trade-offs**:
+  - ✅ Good consistency guarantees
+  - ✅ Better performance than Strong consistency
+  - ✅ Can tolerate some replica failures
+  - ❌ Possibility of brief inconsistency during network partitions
+- **Example**: User profiles, configuration data, e-commerce catalogs
+
+### Eventual Consistency
+- **Description**: Writes go to leader immediately, replicas are updated asynchronously
+- **Use Case**: High-throughput systems where temporary inconsistency is acceptable
+- **Trade-offs**:
+  - ✅ High write performance
+  - ✅ High availability
+  - ✅ Handles network partitions well
+  - ❌ Temporary data inconsistency possible
+  - ❌ Risk of reading stale data from replicas
+- **Example**: Social media feeds, analytics data, caching layers
+
+### Minimal Consistency
+- **Description**: Writes only to leader node, no replica synchronization
+- **Use Case**: Maximum performance scenarios, development/testing
+- **Trade-offs**:
+  - ✅ Fastest write performance
+  - ✅ No dependency on replica nodes
+  - ❌ No data redundancy
+  - ❌ Data loss risk if leader fails
+  - ❌ Not recommended for production
+- **Example**: Development environments, temporary caches, performance testing
 
 ## Duration Format
 
@@ -181,6 +247,9 @@ Duration values use Go's duration format:
 
 ## Usage
 
+RapidStore supports multiple ways to specify configuration:
+
+### Command Line Configuration File
 To start RapidStore with a configuration file:
 
 ```bash
@@ -189,6 +258,42 @@ rapidstore --config=/path/to/config.json
 
 # Using YAML config  
 rapidstore --config=/path/to/config.yaml
+
+# Using relative paths
+rapidstore --config=./configs/development.json
+rapidstore --config=../shared/production.yaml
+```
+
+### Command Line Arguments
+You can also override specific configuration values via command line flags:
+
+```bash
+# Override port and address
+rapidstore --config=config.json --port=8080 --address=0.0.0.0
+
+# Override consistency type
+rapidstore --config=config.yaml --consistency=Strong
+
+# Override WAL settings
+rapidstore --config=config.json --wal-path=/custom/wal.log --wal-sync-interval=2s
+```
+
+### Configuration Precedence
+Configuration values are applied in the following order (later values override earlier ones):
+
+1. **Default values** (built into the application)
+2. **Configuration file** (JSON or YAML)
+3. **Command line flags** (highest priority)
+
+### Automatic Defaults
+If no configuration file is specified, RapidStore will use sensible defaults:
+
+```bash
+# Uses all default values
+rapidstore
+
+# Uses defaults with CLI overrides
+rapidstore --port=7000 --consistency=Eventual
 ```
 
 The server will automatically detect the file format and parse accordingly.

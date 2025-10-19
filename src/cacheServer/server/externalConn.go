@@ -131,8 +131,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 			} else {
 				s.ramCache.SetKey(key, value, time.Second*time.Duration(ttl))
 			}
-			// should we return failed here? we can always resend later
-			if syncExternal(s.config.election.followerInfo, content, 1, time.Second*5) {
+			if s.propogateChange(content) {
 				conn.Write([]byte(Successfull + "\n"))
 			} else {
 				conn.Write([]byte(Failed + "\n"))
@@ -159,13 +158,18 @@ func (s *Server) handleConnection(conn net.Conn) {
 				continue
 			}
 			key := parts[1]
-			if err := s.Wal.Append(NewDeleteKeyEntry(key)); err != nil {
+			content := NewDeleteKeyEntry(key)
+			if err := s.Wal.Append(content); err != nil {
 				globalLogger.Error("WAL Append error", zap.Error(err))
 				conn.Write([]byte(Failed + "\n"))
 				continue
 			}
 			s.ramCache.DeleteKey(key)
-			conn.Write([]byte(Successfull + "\n"))
+			if s.propogateChange(content) {
+				conn.Write([]byte(Successfull + "\n"))
+			} else {
+				conn.Write([]byte(Failed + "\n"))
+			}
 		// ToDO update this so that internally handles time.Time for expireation due to latency
 		case string(Expire):
 			globalLogger.Info("EXPIRE command received", zap.String("command", string(buff[:n])))
@@ -183,7 +187,8 @@ func (s *Server) handleConnection(conn net.Conn) {
 				conn.Write([]byte("Error: Invalid TTL value\n"))
 				continue
 			}
-			if err := s.Wal.Append(NewExpireKey(key, time.Second*time.Duration(ttl))); err != nil {
+			content := NewExpireKey(key, time.Second*time.Duration(ttl))
+			if err := s.Wal.Append(content); err != nil {
 				globalLogger.Error("WAL Append error", zap.Error(err))
 				conn.Write([]byte(Failed + "\n"))
 				continue
@@ -193,7 +198,11 @@ func (s *Server) handleConnection(conn net.Conn) {
 			} else {
 				s.ramCache.ExpireKey(key, time.Second*time.Duration(ttl))
 			}
-			conn.Write([]byte(Successfull + "\n"))
+			if s.propogateChange(content) {
+				conn.Write([]byte(Successfull + "\n"))
+			} else {
+				conn.Write([]byte(Failed + "\n"))
+			}
 		case string(TTL):
 			globalLogger.Info("TTL command received", zap.String("command", string(buff[:n])))
 			if len(parts) != 2 {
@@ -240,7 +249,8 @@ func (s *Server) handleConnection(conn net.Conn) {
 				continue
 			}
 			key := parts[1]
-			if err := s.Wal.Append(NewIncrement(key)); err != nil {
+			content := NewIncrement(key)
+			if err := s.Wal.Append(content); err != nil {
 				globalLogger.Error("WAL Append error", zap.Error(err))
 				conn.Write([]byte(Failed + "\n"))
 				continue
@@ -250,7 +260,11 @@ func (s *Server) handleConnection(conn net.Conn) {
 				conn.Write([]byte("Error: " + err.Error() + "\n"))
 				continue
 			}
-			conn.Write([]byte(fmt.Sprintf("%d\n", newv)))
+			if s.propogateChange(content) {
+				conn.Write([]byte(fmt.Sprintf("%d\n", newv)))
+			} else {
+				conn.Write([]byte(Failed + "\n"))
+			}
 		case string(Decr):
 			globalLogger.Info("DECR command received", zap.String("command", string(buff[:n])))
 			if len(parts) != 2 {
@@ -259,7 +273,8 @@ func (s *Server) handleConnection(conn net.Conn) {
 				continue
 			}
 			key := parts[1]
-			if err := s.Wal.Append(NewDecrement(key)); err != nil {
+			content := NewDecrement(key)
+			if err := s.Wal.Append(content); err != nil {
 				globalLogger.Error("WAL Append error", zap.Error(err))
 				conn.Write([]byte(Failed + "\n"))
 				continue
@@ -269,7 +284,11 @@ func (s *Server) handleConnection(conn net.Conn) {
 				conn.Write([]byte("Error: " + err.Error() + "\n"))
 				continue
 			}
-			conn.Write([]byte(fmt.Sprintf("%d\n", newv)))
+			if s.propogateChange(content) {
+				conn.Write([]byte(fmt.Sprintf("%d\n", newv)))
+			} else {
+				conn.Write([]byte(Failed + "\n"))
+			}
 		case string(Append):
 			globalLogger.Info("APPEND command received", zap.String("command", string(buff[:n])))
 			if len(parts) < 3 {
@@ -280,7 +299,8 @@ func (s *Server) handleConnection(conn net.Conn) {
 			key := parts[1]
 			// Join all parts from index 2 onwards to handle values with spaces
 			suffix := strings.Join(parts[2:], " ")
-			if err := s.Wal.Append(NewAppend(key, suffix)); err != nil {
+			content := NewAppend(key, suffix)
+			if err := s.Wal.Append(content); err != nil {
 				globalLogger.Error("WAL Append error", zap.Error(err))
 				conn.Write([]byte(Failed + "\n"))
 				continue
@@ -290,19 +310,27 @@ func (s *Server) handleConnection(conn net.Conn) {
 				conn.Write([]byte("Error: " + err.Error() + "\n"))
 				continue
 			}
-			conn.Write([]byte(Successfull + "\n"))
+			if s.propogateChange(content) {
+				conn.Write([]byte(Successfull + "\n"))
+			} else {
+				conn.Write([]byte(Failed + "\n"))
+			}
 		case string(Mset):
 			globalLogger.Info("MSET command received", zap.String("command", string(buff[:n])))
 			//TODO: this is a bit more complicated since its a varadic function
 			toMap := decodePairs(parts[1:])
-			if err := s.Wal.Append(NewMset(toMap)); err != nil {
+			content := NewMset(toMap)
+			if err := s.Wal.Append(content); err != nil {
 				globalLogger.Error("WAL Append error", zap.Error(err))
 				conn.Write([]byte(Failed + "\n"))
 				continue
 			}
 			s.ramCache.MSet(toMap)
-			conn.Write([]byte(Successfull + "\n"))
-
+			if s.propogateChange(content) {
+				conn.Write([]byte(Successfull + "\n"))
+			} else {
+				conn.Write([]byte(Failed + "\n"))
+			}
 		case string(HSet):
 			globalLogger.Info("HSET command received", zap.String("command", string(buff[:n])))
 			if len(parts) < 4 {
@@ -323,7 +351,8 @@ func (s *Server) handleConnection(conn net.Conn) {
 					continue
 				}
 			}
-			if err := s.Wal.Append(NewHSet(key, field, value, time.Second*time.Duration(ttl))); err != nil {
+			content := NewHSet(key, field, value, time.Second*time.Duration(ttl))
+			if err := s.Wal.Append(content); err != nil {
 				globalLogger.Error("WAL Append error", zap.Error(err))
 				conn.Write([]byte(Failed + "\n"))
 				continue
@@ -333,7 +362,11 @@ func (s *Server) handleConnection(conn net.Conn) {
 			} else {
 				s.ramCache.HSet(key, field, value, time.Second*time.Duration(ttl))
 			}
-			conn.Write([]byte(Successfull + "\n"))
+			if s.propogateChange(content) {
+				conn.Write([]byte(Successfull + "\n"))
+			} else {
+				conn.Write([]byte(Failed + "\n"))
+			}
 		case string(HGet):
 			globalLogger.Info("HGET command received", zap.String("command", string(buff[:n])))
 			if len(parts) != 3 {
@@ -368,13 +401,18 @@ func (s *Server) handleConnection(conn net.Conn) {
 			}
 			key := parts[1]
 			field := parts[2]
-			if err := s.Wal.Append(NewHDel(key, field)); err != nil {
+			content := NewHDel(key, field)
+			if err := s.Wal.Append(content); err != nil {
 				globalLogger.Error("WAL Append error", zap.Error(err))
 				conn.Write([]byte(Failed + "\n"))
 				continue
 			}
 			s.ramCache.HDel(key, field)
-			conn.Write([]byte(Successfull + "\n"))
+			if s.propogateChange(content) {
+				conn.Write([]byte(Successfull + "\n"))
+			} else {
+				conn.Write([]byte(Failed + "\n"))
+			}
 		case string(HExists):
 			globalLogger.Info("HEXISTS command received", zap.String("command", string(buff[:n])))
 			if len(parts) != 3 {
@@ -399,13 +437,18 @@ func (s *Server) handleConnection(conn net.Conn) {
 			}
 			key := parts[1]
 			values := trueType(parts[2])
-			if err := s.Wal.Append(NewLPush(key, values)); err != nil {
+			content := NewLPush(key, values)
+			if err := s.Wal.Append(content); err != nil {
 				globalLogger.Error("WAL Append error", zap.Error(err))
 				conn.Write([]byte(Failed + "\n"))
 				continue
 			}
 			s.ramCache.LPush(key, values)
-			conn.Write([]byte(Successfull + "\n"))
+			if s.propogateChange(content) {
+				conn.Write([]byte(Successfull + "\n"))
+			} else {
+				conn.Write([]byte(Failed + "\n"))
+			}
 		case string(RPush):
 			globalLogger.Info("RPUSH command received", zap.String("command", string(buff[:n])))
 			if len(parts) < 3 {
@@ -415,13 +458,18 @@ func (s *Server) handleConnection(conn net.Conn) {
 			}
 			key := parts[1]
 			values := trueType(parts[2])
-			if err := s.Wal.Append(NewRPush(key, values)); err != nil {
+			content := NewRPush(key, values)
+			if err := s.Wal.Append(content); err != nil {
 				globalLogger.Error("WAL Append error", zap.Error(err))
 				conn.Write([]byte(Failed + "\n"))
 				continue
 			}
 			s.ramCache.RPush(key, values)
-			conn.Write([]byte(Successfull + "\n"))
+			if s.propogateChange(content) {
+				conn.Write([]byte(Successfull + "\n"))
+			} else {
+				conn.Write([]byte(Failed + "\n"))
+			}
 		case string(LPop):
 			globalLogger.Info("LPOP command received", zap.String("command", string(buff[:n])))
 			if len(parts) != 2 {
@@ -430,7 +478,8 @@ func (s *Server) handleConnection(conn net.Conn) {
 				continue
 			}
 			key := parts[1]
-			if err := s.Wal.Append(NewLPop(key)); err != nil {
+			content := NewLPop(key)
+			if err := s.Wal.Append(content); err != nil {
 				globalLogger.Error("WAL Append error", zap.Error(err))
 				conn.Write([]byte(Failed + "\n"))
 				continue
@@ -440,7 +489,11 @@ func (s *Server) handleConnection(conn net.Conn) {
 				conn.Write([]byte("Failed LPop operation: " + err.Error() + "\n"))
 				continue
 			}
-			conn.Write([]byte(fmt.Sprintf("%v\n", v)))
+			if s.propogateChange(content) {
+				conn.Write([]byte(fmt.Sprintf("%v\n", v)))
+			} else {
+				conn.Write([]byte(Failed + "\n"))
+			}
 		case string(RPop):
 			globalLogger.Info("RPOP command received", zap.String("command", string(buff[:n])))
 			if len(parts) != 2 {
@@ -449,7 +502,8 @@ func (s *Server) handleConnection(conn net.Conn) {
 				continue
 			}
 			key := parts[1]
-			if err := s.Wal.Append(NewRPop(key)); err != nil {
+			content := NewRPop(key)
+			if err := s.Wal.Append(content); err != nil {
 				globalLogger.Error("WAL Append error", zap.Error(err))
 				conn.Write([]byte(Failed + "\n"))
 				continue
@@ -459,7 +513,11 @@ func (s *Server) handleConnection(conn net.Conn) {
 				conn.Write([]byte("Failed RPop operation: " + err.Error() + "\n"))
 				continue
 			}
-			conn.Write([]byte(fmt.Sprintf("%v\n", v)))
+			if s.propogateChange(content) {
+				conn.Write([]byte(fmt.Sprintf("%v\n", v)))
+			} else {
+				conn.Write([]byte(Failed + "\n"))
+			}
 
 		case string(LRange):
 			globalLogger.Info("LRANGE command received", zap.String("command", string(buff[:n])))
@@ -492,13 +550,18 @@ func (s *Server) handleConnection(conn net.Conn) {
 			}
 			key := parts[1]
 			members := trueType(parts[2])
-			if err := s.Wal.Append(NewSAdd(key, members)); err != nil {
+			content := NewSAdd(key, members)
+			if err := s.Wal.Append(content); err != nil {
 				globalLogger.Error("WAL Append error", zap.Error(err))
 				conn.Write([]byte(Failed + "\n"))
 				continue
 			}
 			s.ramCache.SAdd(key, members)
-			conn.Write([]byte(Successfull + "\n"))
+			if s.propogateChange(content) {
+				conn.Write([]byte(Successfull + "\n"))
+			} else {
+				conn.Write([]byte(Failed + "\n"))
+			}
 		case string(SMembers):
 			globalLogger.Info("SMEMBERS command received", zap.String("command", string(buff[:n])))
 			if len(parts) != 2 {
@@ -518,13 +581,18 @@ func (s *Server) handleConnection(conn net.Conn) {
 			}
 			key := parts[1]
 			members := parts[2]
-			if err := s.Wal.Append(NewSRem(key, members)); err != nil {
+			content := NewSRem(key, members)
+			if err := s.Wal.Append(content); err != nil {
 				globalLogger.Error("WAL Append error", zap.Error(err))
 				conn.Write([]byte(Failed + "\n"))
 				continue
 			}
 			s.ramCache.SRem(key, members)
-			conn.Write([]byte(Successfull + "\n"))
+			if s.propogateChange(content) {
+				conn.Write([]byte(Successfull + "\n"))
+			} else {
+				conn.Write([]byte(Failed + "\n"))
+			}
 		case string(SIsMember):
 			globalLogger.Info("SISMEMBER command received", zap.String("command", string(buff[:n])))
 			if len(parts) != 3 {
@@ -566,13 +634,18 @@ func (s *Server) handleConnection(conn net.Conn) {
 				continue
 			}
 			member := parts[3]
-			if err := s.Wal.Append(NewZAdd(key, score, member)); err != nil {
+			content := NewZAdd(key, score, member)
+			if err := s.Wal.Append(content); err != nil {
 				globalLogger.Error("WAL Append error", zap.Error(err))
 				conn.Write([]byte(Failed + "\n"))
 				continue
 			}
 			s.ramCache.ZAdd(key, score, member)
-			conn.Write([]byte(Successfull + "\n"))
+			if s.propogateChange(content) {
+				conn.Write([]byte(Successfull + "\n"))
+			} else {
+				conn.Write([]byte(Failed + "\n"))
+			}
 		case string(Zremove):
 			globalLogger.Info("ZREMOVE command received", zap.String("command", string(buff[:n])))
 			if len(parts) != 3 {
@@ -582,7 +655,8 @@ func (s *Server) handleConnection(conn net.Conn) {
 			}
 			key := parts[1]
 			member := parts[2]
-			if err := s.Wal.Append(NewZRemove(key, member)); err != nil {
+			content := NewZRemove(key, member)
+			if err := s.Wal.Append(content); err != nil {
 				globalLogger.Error("WAL Append error", zap.Error(err))
 				conn.Write([]byte(Failed + "\n"))
 				continue
@@ -592,7 +666,11 @@ func (s *Server) handleConnection(conn net.Conn) {
 				conn.Write([]byte("Failed ZRemove operation: " + err.Error() + "\n"))
 				continue
 			}
-			conn.Write([]byte(Successfull + "\n"))
+			if s.propogateChange(content) {
+				conn.Write([]byte(Successfull + "\n"))
+			} else {
+				conn.Write([]byte(Failed + "\n"))
+			}
 		case string(Zrange):
 			globalLogger.Info("ZRANGE command received", zap.String("command", string(buff[:n])))
 			if len(parts) < 4 {
@@ -872,6 +950,22 @@ func (s *Server) updateState(entry entryLog) error {
 	return nil
 }
 
+func (s *Server) propogateChange(message []byte) bool {
+	switch s.config.persistence.ConsistancyType {
+	case string(Strong):
+		syncExternal(s.config.election.followerInfo, message, uint(len(s.config.election.followerInfo)), s.config.persistence.ReplicationTimeout)
+	case string(Quorum):
+		neededAcks := (uint(len(s.config.election.followerInfo)) / 2) + 1
+		return syncExternal(s.config.election.followerInfo, message, neededAcks, s.config.persistence.ReplicationTimeout)
+	case string(Eventual): // eventual -> send to 1
+		return syncExternal(s.config.election.followerInfo, message, 1, s.config.persistence.ReplicationTimeout)
+	default:
+		// leader only case
+		return true
+	}
+	return true
+}
+
 // dest : ip:port of followers nodes
 // message : message to be sent
 // concensus : number of nodes that need to ack the message
@@ -930,15 +1024,15 @@ func syncExternal(dest []followerInfo, message []byte, consensus uint, timeout t
 		}
 	}
 }
-func (s *Server) InterServerCommunications(isHost bool) {
+func (s *Server) InterServerCommunications() {
 
 	// Start inter-server connection immediately instead of waiting for ticker
 	globalLogger.Debug("Starting initial InterServer connection")
-	s.startInterServerConnection(isHost)
+	s.startInterServerConnection()
 
 }
 
-func (s *Server) startInterServerConnection(isHost bool) chan struct{} {
+func (s *Server) startInterServerConnection() chan struct{} {
 	stopSignal := make(chan struct{})
 
 	go func() {
@@ -955,7 +1049,7 @@ func (s *Server) startInterServerConnection(isHost bool) chan struct{} {
 		}
 		defer healthListener.Close()
 
-		if isHost {
+		if s.config.election.isLeader {
 			globalLogger.Info("Starting Inter Server communications as Leader")
 		} else {
 			globalLogger.Info("Starting Inter Server communications as Follower")

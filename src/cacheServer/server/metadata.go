@@ -1,7 +1,6 @@
 package server
 
 import (
-	memorystore "RapidStore/memoryStore"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,7 +18,14 @@ import (
 )
 
 type internalServerMSg string
+type consistancyType string
 
+const (
+	Strong     consistancyType = "Strong"      // strong consistancy all nodes must ack
+	Quorum     consistancyType = "quorum"      // need n/2+1 acks
+	Eventual   consistancyType = "eventual"    // eventual consistancy
+	LeaderOnly consistancyType = "leader-only" // write to leader, skip replication at write, but replicate in background
+)
 const (
 	zooKeeperENV = "ZOOKEEPERADDR"
 )
@@ -136,16 +142,20 @@ type ServerConfig struct {
 }
 
 type PersistenceConfig struct {
-	WALSyncInterval time.Duration `json:"walsyncinterval" yml:"wal_sync_interval"` // how often to sync WAL to disk
-	WALPath         string        `json:"walpath" yml:"wal_path"`                  // path to WAL file
-	WALMaxSize      uint64        `json:"walmaxsize" yml:"wal_max_size"`           // max size of WAL file before rotation
+	ConsistancyType    string        `json:"consistancytype" yml:"consistancy_type"`       // e.g. "Strong","quorum","eventual","minimal"
+	ReplicationTimeout time.Duration `json:"replicationtimeout" yml:"replication_timeout"` // duration for replication timeout
+	WALSyncInterval    time.Duration `json:"walsyncinterval" yml:"wal_sync_interval"`      // how often to sync WAL to disk
+	WALPath            string        `json:"walpath" yml:"wal_path"`                       // path to WAL file -> must be non-nested
+	WALMaxSize         uint64        `json:"walmaxsize" yml:"wal_max_size"`                // max size of WAL file before rotation
 }
 
 func defaultPersistenceConfig() *PersistenceConfig {
 	return &PersistenceConfig{
-		WALSyncInterval: 500 * time.Millisecond,
-		WALPath:         "wal.log",
-		WALMaxSize:      4096, //
+		ConsistancyType:    string(Eventual),
+		ReplicationTimeout: 2 * time.Second,
+		WALSyncInterval:    500 * time.Millisecond,
+		WALPath:            "wal.log",
+		WALMaxSize:         4096, //
 	}
 }
 
@@ -153,7 +163,7 @@ type MonitoringConfig struct {
 	MetricsPort     int           `json:"metricsport" yml:"metrics_port"`
 	MetricsPath     string        `json:"metricspath" yml:"metrics_path"`
 	MetricsInterval time.Duration `json:"metricsinterval" yml:"metrics_interval"`
-	LogFile         string        `json:"logfile" yml:"log_file"`
+	LogFile         string        `json:"logfile" yml:"log_file"` // path to log file -> non-nested
 }
 
 func defaultMonitoringConfig() *MonitoringConfig {
@@ -220,18 +230,17 @@ func defaultElectionConfig() *ElectionConfig {
 		zkLeaderEvents:      make(chan zk.Event),
 		zkConn:              nil,
 		ZookeeperServers:    []string{zooKeeperServer},
-		ElectionPath:        "/rapidstore/leader", // pretty sure this is never used TODO: delete later after checjing
 		NodeID:              "(TDB) remove and read from zookeeper",
 		Timeout:             500 * time.Millisecond,
 	}
 }
 
-func ServerFromConfig(fileName string, r io.Reader) (*Server, error) {
+func ServerFromConfig(fileName string, r io.Reader) (*ServerConfig, error) {
 	parts := strings.Split(filepath.Base(fileName), ".")
 	ext := strings.ToLower(parts[len(parts)-1])
 
 	// First, initialize with defaults
-	var config = defeaultServerConfig()
+	var config = defaultServerConfig()
 	var err error
 
 	switch ext {
@@ -248,13 +257,7 @@ func ServerFromConfig(fileName string, r io.Reader) (*Server, error) {
 	default:
 		return nil, fmt.Errorf("unsupported config file format: %s", ext)
 	}
-	s := &Server{
-		config:          config,
-		productionStats: ServerInfoMetaData{},
-		ramCache:        memorystore.NewCache(),
-		close:           make(chan struct{}),
-	}
-	return s, nil
+	return config, nil
 }
 func serverConfigFromJson(r io.Reader, c *ServerConfig) (ServerConfig, error) {
 
@@ -310,6 +313,19 @@ func serverConfigFromJson(r io.Reader, c *ServerConfig) (ServerConfig, error) {
 		}
 		if walMaxSize, ok := outerConfig.PersistenceConfig["wal_max_size"].(float64); ok {
 			c.persistence.WALMaxSize = uint64(walMaxSize)
+		}
+		if consistancyType, ok := outerConfig.PersistenceConfig["consistancy_type"].(string); ok {
+			switch consistancyType {
+			case string(Strong), string(Quorum), string(Eventual), string(LeaderOnly):
+				c.persistence.ConsistancyType = consistancyType
+			default:
+				c.persistence.ConsistancyType = string(Eventual) // default to Strong if invalid
+			}
+		}
+		if replicationTimeout, ok := outerConfig.PersistenceConfig["replication_timeout"].(string); ok {
+			if duration, err := time.ParseDuration(replicationTimeout); err == nil {
+				c.persistence.ReplicationTimeout = duration
+			}
 		}
 	}
 

@@ -15,6 +15,13 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	B  = 1
+	KB = 1024 * B
+	MB = 1024 * KB
+	GB = 1024 * MB
+)
+
 var (
 	// singleton instance of WriteAheadLog
 	wal         *WriteAheadLog
@@ -142,7 +149,8 @@ func (wal *WriteAheadLog) Append(entry entryLog) error {
 	if err := binary.Write(wal.buffer, binary.BigEndian, checkSum); err != nil {
 		return fmt.Errorf("failed to write checksum: %v", err)
 	}
-	atomic.AddUint64(&wal.sequenceNumber, 1)
+	//TODO: increment sequence number by the size of the entire entry
+	atomic.AddUint64(&wal.sequenceNumber, uint64(newEntrySize))
 	return nil
 
 }

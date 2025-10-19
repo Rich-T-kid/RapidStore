@@ -1,13 +1,15 @@
 {
     "serverConfig": {
-        "address": "this should also propagate",
+        "address": "127.0.0.1",
         "port": 6379,
         "health_check_port": 10001,
         "max_clients": 10,
         "timeout": "45s",
         "idle_timeout": "600s"
     },
-    "PersistanceConfig": {
+    "PersistenceConfig": {
+        "consistancy_type": "Quorum",
+        "replication_timeout": "3s",
         "wal_sync_interval": "2s",
         "wal_path": "./data/wal_segment.log",
         "wal_max_size": 20971520
@@ -22,6 +24,7 @@
         "zookeeper_servers": ["127.0.0.1:2182", "127.0.0.1:2183"],
         "election_path": "/rapidnode/leader",
         "node_id": "node-2",
-        "timeout": "8s"
+        "election_timeout": "8s",
+        "heartbeat_interval": "2s"
     }
 }

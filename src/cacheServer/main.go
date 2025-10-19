@@ -1,11 +1,18 @@
 package main
 
-import "RapidStore/server"
+import (
+	"RapidStore/server"
+	"os"
+)
 
-var basePort = 6300
-
+/*
+ */
 func main() {
-	server.NewServer(
-		server.WithPort(basePort + 40),
-	).Start()
+	if len(os.Args) == 2 {
+		s := server.NewServerFromFile(os.Args[1])
+		s.Start()
+	} else {
+		s := server.NewServer()
+		s.Start()
+	}
 }
