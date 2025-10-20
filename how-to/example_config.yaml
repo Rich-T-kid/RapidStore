@@ -1,11 +1,13 @@
 serverConfig:
-  address: "this should also propagate"
+  address: "192.168.1.100"
   port: 6379
   health_check_port: 10001
   max_clients: 10
   timeout: "45s"
   idle_timeout: "600s"
-PersistanceConfig:
+PersistenceConfig:
+  consistancy_type: "Eventual"
+  replication_timeout: "2s"
   wal_sync_interval: "2s"
   wal_path: "./data/wal_segment.log"
   wal_max_size: 20971520
@@ -20,4 +22,5 @@ ElectionConfig:
     - "127.0.0.1:2183"
   election_path: "/rapidnode/leader"
   node_id: "node-2"
-  timeout: "8s"
+  election_timeout: "8s"
+  heartbeat_interval: "2s"

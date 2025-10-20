@@ -44,16 +44,17 @@ func TestAppendKeys(t *testing.T) {
 		NewDecrement("counter"),
 		NewAppend("list:key", "suf"),
 	}
-
+	var size uint64
 	for i, e := range entries {
+		size += uint64(len(e)) + 20 // entry plus overhead of each entry
 		if err := w.Append(e); err != nil {
 			t.Fatalf("append #%d failed: %v", i, err)
 		}
 	}
 
 	got := atomic.LoadUint64(&w.sequenceNumber)
-	if got != uint64(len(entries)) {
-		t.Fatalf("expected sequenceNumber %d, got %d", len(entries), got)
+	if got != size {
+		t.Fatalf("expected sequenceNumber %d, got %d", size, got)
 	}
 }
 
@@ -88,15 +89,16 @@ func TestAppendDataStructures(t *testing.T) {
 		NewZRevRank("zset:1", "member1"),
 		NewZScore("zset:1", "member1"),
 	}
-
+	var size uint64
 	for i, e := range entries {
+		size += uint64(len(e)) + 20 // entry plus overhead of each entry
 		if err := w.Append(e); err != nil {
 			t.Fatalf("append data-struct #%d failed: %v", i, err)
 		}
 	}
 	got := atomic.LoadUint64(&w.sequenceNumber)
-	if got != uint64(len(entries)) {
-		t.Fatalf("expected sequenceNumber %d, got %d", len(entries), got)
+	if got != size {
+		t.Fatalf("expected sequenceNumber %d, got %d", size, got)
 	}
 }
 

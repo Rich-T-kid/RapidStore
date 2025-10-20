@@ -1,20 +1,19 @@
 ServerConfig:
-  port: 6379
+  port: 4060
   health_check_port: 8079
   max_clients: 1500
   timeout: "50s"
   idle_timeout: "750s"
 PersistenceConfig:
-  consistancy_type: "Quorum"
+  consistancy_type: "leader-only"
   replication_timeout: "1.5s"
   wal_sync_interval: "4s"
-  wal_path: "./staging_wal.log"
-  wal_max_size: 15728640
+  wal_path: "./staging_wal1.log"
+  wal_max_size: 157286
 MonitoringConfig:
   metrics_port: 9392
   metrics_path: "/metrics.log"
   metrics_interval: "2s"
-  log_file: "./staging.log"
 ElectionConfig:
   election_timeout: "5s"
   heartbeat_interval: "2s"

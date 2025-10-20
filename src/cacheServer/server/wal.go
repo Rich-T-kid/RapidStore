@@ -15,6 +15,13 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	B  = 1
+	KB = 1024 * B
+	MB = 1024 * KB
+	GB = 1024 * MB
+)
+
 var (
 	// singleton instance of WriteAheadLog
 	wal         *WriteAheadLog
@@ -142,9 +149,23 @@ func (wal *WriteAheadLog) Append(entry entryLog) error {
 	if err := binary.Write(wal.buffer, binary.BigEndian, checkSum); err != nil {
 		return fmt.Errorf("failed to write checksum: %v", err)
 	}
-	atomic.AddUint64(&wal.sequenceNumber, 1)
+	//TODO: increment sequence number by the size of the entire entry
+	atomic.AddUint64(&wal.sequenceNumber, uint64(newEntrySize))
 	return nil
 
+}
+func (wal *WriteAheadLog) EntrysSince(pos uint64) ([]byte, error) {
+	f, err := os.Open(wal.filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	if _, err := f.Seek(int64(pos), io.SeekStart); err != nil {
+		return nil, err
+	}
+
+	return io.ReadAll(f)
 }
 
 type walEntry struct {
@@ -230,6 +251,15 @@ func (wal *WriteAheadLog) ReadWal(r io.Reader) <-chan walEntry {
 	}()
 
 	return result
+}
+func (wal *WriteAheadLog) CurrentOffset() (uint64, error) {
+	wal.lock.Lock()
+	defer wal.lock.Unlock()
+	st, err := wal.file.Stat()
+	if err != nil {
+		return 0, err
+	}
+	return uint64(st.Size()), nil
 }
 
 func NewSetEntry(key string, value interface{}, t time.Duration) entryLog {

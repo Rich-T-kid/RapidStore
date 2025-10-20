@@ -8,6 +8,8 @@
         "idle_timeout": "600s"
     },
     "PersistenceConfig": {
+        "consistancy_type": "Quorum",
+        "replication_timeout": "3s",
         "wal_sync_interval": "2s",
         "wal_path": "./test_wal.log",
         "wal_max_size": 5242880
@@ -22,6 +24,7 @@
         "zookeeper_servers": ["test1:2181", "test2:2181"],
         "election_path": "/test/leader",
         "node_id": "test-node-1",
-        "timeout": "10s"
+        "election_timeout": "10s",
+        "heartbeat_interval": "2s"
     }
 }

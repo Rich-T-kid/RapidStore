@@ -171,9 +171,17 @@ func (s *Server) initLeader() error {
 				}
 				return fmt.Errorf("failed to set watch on predecessor node: %w", err)
 			}
+			// set leader info
+			lconf, err := newLeader(zkConn)
+			if err != nil {
+				return fmt.Errorf("failed to set up leader connection in newElection: %w", err)
+			}
+
+			s.config.election.updateLeaderInfo(lconf.Address, lconf.Port, lconf.c)
 			// watch the leader for events
 			electedLeaderPath := fmt.Sprintf("%s/%s", electionPath, electedLeader)
 			globalLogger.Debug("Elected leader path", zap.String("path", electedLeaderPath))
+
 			_, _, leaderW, err := zkConn.GetW(electedLeaderPath)
 			if err != nil {
 				if err == zk.ErrNoNode {
@@ -185,6 +193,12 @@ func (s *Server) initLeader() error {
 			s.config.election.zkPredecessorEvents = predW
 			s.config.election.zkLeaderEvents = leaderW
 			go s.watchZoo()
+			// for now just return error but in the future need to do retrys TODO:
+			err = s.attemptSync() // grab latest updates from leader
+			if err != nil {
+				return err
+			}
+
 		}
 	}
 
@@ -296,6 +310,10 @@ func (s *Server) newElection() error {
 		s.config.election.zkLeaderEvents = leaderEventChan
 	}
 
+	err = s.attemptSync() // grab latest updates from leader
+	if err != nil {
+		return err
+	}
 	return nil
 }
 

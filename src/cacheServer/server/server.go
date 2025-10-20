@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -16,7 +18,6 @@ import (
 var globalLogger *zap.Logger
 
 func init() {
-	// TODO: for now this is a basic setup, later we can make it configurable
 
 	config := zap.Config{
 		Level:       zap.NewAtomicLevelAt(zap.InfoLevel),
@@ -50,8 +51,18 @@ func init() {
 
 type serverOption = func(s *ServerConfig)
 
-func NewServerConfig(...ServerConfig) *ServerConfig {
-	return &ServerConfig{}
+// NewConfigForTesting creates a server configuration without starting the server
+// This is useful for testing configuration without the overhead of starting goroutines
+func newConfigForTesting(options ...serverOption) *ServerConfig {
+	// Start with default configuration
+	config := defaultServerConfig()
+
+	// Apply all the functional options
+	for _, option := range options {
+		option(config)
+	}
+
+	return config
 }
 
 // Functional option constructors
@@ -195,7 +206,7 @@ func WithElectionTimeout(timeout time.Duration) serverOption {
 		s.election.Timeout = timeout
 	}
 }
-func defeaultServerConfig() *ServerConfig {
+func defaultServerConfig() *ServerConfig {
 	return &ServerConfig{
 		Address:         "0.0.0.0",
 		Port:            6380,
@@ -215,37 +226,54 @@ type Server struct {
 	dynamicMessage  chan internalServerMSg
 	// other fields like listener, handlers, etc.
 	ramCache memorystore.Cache
-	Wal      *WriteAheadLog
+	mu       sync.RWMutex
+	wal      *WriteAheadLog
 	close    chan struct{}
 	isLive   bool
 }
 
+func NewServerFromFile(configFile string) *Server {
+	f, err := os.OpenFile(configFile, os.O_RDONLY, 0644)
+	if err != nil {
+		panic(fmt.Sprintf("Error reading config file: %v\n", err))
+	}
+	cfg, err := ServerFromConfig(configFile, f)
+	if err != nil {
+		panic(err)
+	}
+	return newServer(cfg)
+}
+
 func NewServer(options ...serverOption) *Server {
 	// Start with default configuration
-	config := defeaultServerConfig()
+	config := defaultServerConfig()
 
 	// Apply all the functional options
 	for _, option := range options {
 		option(config)
 	}
 
-	var s = &Server{
-		config:         config,
+	return newServer(config)
+}
+func newServer(cfg *ServerConfig) *Server {
+	s := &Server{
+		config:         cfg,
 		ramCache:       memorystore.NewCache(),
-		Wal:            newWAL(config.persistence.WALPath, uint32(bufferSize), config.persistence.WALSyncInterval),
-		dynamicMessage: make(chan internalServerMSg, 1), // Buffered channel to avoid blocking
+		wal:            newWAL(cfg.persistence.WALPath, uint32(cfg.persistence.WALMaxSize), cfg.persistence.WALSyncInterval),
+		dynamicMessage: make(chan internalServerMSg, 1),
 		close:          make(chan struct{}),
 		isLive:         false,
 	}
-	err := s.initLeader()
-	if err != nil {
-		panic(fmt.Sprintf("Error initializing leader election: %v\n", err))
+
+	if err := s.initLeader(); err != nil {
+		panic(fmt.Sprintf("error initializing leader election: %v", err))
 	}
-	go s.InterServerCommunications(s.config.election.isLeader)
-	connAddr := fmt.Sprintf("%s:%d", s.config.Address, s.config.Port)
-	globalLogger.Info("Server init config:", zap.String("address", connAddr))
-	// expose metrics via http endpoint
+	// start early to avoid missing messages
+	go s.interServerCommunications()
 	go s.exportStats()
+
+	connAddr := fmt.Sprintf("%s:%d", s.config.Address, s.config.Port)
+	globalLogger.Info("Server initialized", zap.String("address", connAddr))
 	return s
 }
 func (s *Server) Start() error {
@@ -297,7 +325,7 @@ func (s *Server) exportStats() {
 	// Create a new ServeMux for this server instance to avoid conflicts
 	// application code wise this is unimportant but test are strcutred poorly right now, easiest fix
 	mux := http.NewServeMux()
-	mux.HandleFunc(s.config.monitoring.MetricsPath, s.Metrics)
+	mux.HandleFunc(s.config.monitoring.MetricsPath, s.metrics)
 
 	go func() {
 		var alreadyTried = false
@@ -316,7 +344,7 @@ func (s *Server) exportStats() {
 		}
 	}()
 }
-func (s *Server) Metrics(w http.ResponseWriter, r *http.Request) {
+func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Content-Type", "application/json")
 	gcStats, err := s.config.monitoring.collectGcStats()
 	if err != nil {
