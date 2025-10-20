@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -225,7 +226,8 @@ type Server struct {
 	dynamicMessage  chan internalServerMSg
 	// other fields like listener, handlers, etc.
 	ramCache memorystore.Cache
-	Wal      *WriteAheadLog
+	mu       sync.RWMutex
+	wal      *WriteAheadLog
 	close    chan struct{}
 	isLive   bool
 }
@@ -257,7 +259,7 @@ func newServer(cfg *ServerConfig) *Server {
 	s := &Server{
 		config:         cfg,
 		ramCache:       memorystore.NewCache(),
-		Wal:            newWAL(cfg.persistence.WALPath, uint32(cfg.persistence.WALMaxSize), cfg.persistence.WALSyncInterval),
+		wal:            newWAL(cfg.persistence.WALPath, uint32(cfg.persistence.WALMaxSize), cfg.persistence.WALSyncInterval),
 		dynamicMessage: make(chan internalServerMSg, 1),
 		close:          make(chan struct{}),
 		isLive:         false,
@@ -266,8 +268,8 @@ func newServer(cfg *ServerConfig) *Server {
 	if err := s.initLeader(); err != nil {
 		panic(fmt.Sprintf("error initializing leader election: %v", err))
 	}
-
-	go s.InterServerCommunications()
+	// start early to avoid missing messages
+	go s.interServerCommunications()
 	go s.exportStats()
 
 	connAddr := fmt.Sprintf("%s:%d", s.config.Address, s.config.Port)
@@ -323,7 +325,7 @@ func (s *Server) exportStats() {
 	// Create a new ServeMux for this server instance to avoid conflicts
 	// application code wise this is unimportant but test are strcutred poorly right now, easiest fix
 	mux := http.NewServeMux()
-	mux.HandleFunc(s.config.monitoring.MetricsPath, s.Metrics)
+	mux.HandleFunc(s.config.monitoring.MetricsPath, s.metrics)
 
 	go func() {
 		var alreadyTried = false
@@ -342,7 +344,7 @@ func (s *Server) exportStats() {
 		}
 	}()
 }
-func (s *Server) Metrics(w http.ResponseWriter, r *http.Request) {
+func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Content-Type", "application/json")
 	gcStats, err := s.config.monitoring.collectGcStats()
 	if err != nil {

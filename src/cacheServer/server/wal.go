@@ -154,6 +154,19 @@ func (wal *WriteAheadLog) Append(entry entryLog) error {
 	return nil
 
 }
+func (wal *WriteAheadLog) EntrysSince(pos uint64) ([]byte, error) {
+	f, err := os.Open(wal.filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	if _, err := f.Seek(int64(pos), io.SeekStart); err != nil {
+		return nil, err
+	}
+
+	return io.ReadAll(f)
+}
 
 type walEntry struct {
 	MagicNumber uint32
@@ -238,6 +251,15 @@ func (wal *WriteAheadLog) ReadWal(r io.Reader) <-chan walEntry {
 	}()
 
 	return result
+}
+func (wal *WriteAheadLog) CurrentOffset() (uint64, error) {
+	wal.lock.Lock()
+	defer wal.lock.Unlock()
+	st, err := wal.file.Stat()
+	if err != nil {
+		return 0, err
+	}
+	return uint64(st.Size()), nil
 }
 
 func NewSetEntry(key string, value interface{}, t time.Duration) entryLog {

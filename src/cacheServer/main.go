@@ -2,6 +2,7 @@ package main
 
 import (
 	"RapidStore/server"
+	"fmt"
 	"os"
 )
 
@@ -10,9 +11,9 @@ import (
 func main() {
 	if len(os.Args) == 2 {
 		s := server.NewServerFromFile(os.Args[1])
-		s.Start()
+		fmt.Printf("server Start Status: %v\n", s.Start())
 	} else {
 		s := server.NewServer()
-		s.Start()
+		fmt.Printf("server Start Status: %v\n", s.Start())
 	}
 }

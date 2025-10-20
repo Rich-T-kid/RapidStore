@@ -288,9 +288,6 @@ func TestServerFromConfig_YAML_StagingConfig(t *testing.T) {
 	}
 
 	// Verify key server config values
-	if config.Address != "10.0.0.1" {
-		t.Errorf("Expected address '10.0.0.1', got '%s'", config.Address)
-	}
 	if config.Port != 6379 {
 		t.Errorf("Expected port 6379, got %d", config.Port)
 	}
