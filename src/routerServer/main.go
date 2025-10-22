@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -96,6 +95,7 @@ var writeOperations = map[string]bool{
 type serverInfo struct {
 	IP   string
 	Port string
+	c    net.Conn
 }
 type routerServer struct {
 	exposePort           int
@@ -104,6 +104,7 @@ type routerServer struct {
 	rywDuration          time.Duration
 	leaderAddr           string
 	leaderPort           string
+	leaderConn           net.Conn
 	followers            []serverInfo
 	rapidStoreUpdateChan <-chan zk.Event
 	zooManager           *zk.Conn
@@ -185,11 +186,7 @@ func (r *routerServer) handleConnection(conn net.Conn) {
 					r.rywCache[conn.RemoteAddr().String()] = time.Now()
 				}
 				// Route to leader
-				r.RWMutex.RLock() // in case it gets updated while reading
-				var addr = r.leaderAddr
-				var port = r.leaderPort
-				r.RWMutex.RUnlock()
-				resp, err := r.requestCacheServer(addr, port, buffer[:n])
+				resp, err := r.requestCacheServer(r.leaderConn, buffer[:n])
 				if err != nil {
 					conn.Write([]byte(fmt.Sprintf("Error routing to leader: %v\n", err)))
 					continue // Continue to next request instead of closing connection
@@ -201,11 +198,10 @@ func (r *routerServer) handleConnection(conn net.Conn) {
 				if err != nil {
 					// fallback to leader if no followers available
 					server = serverInfo{
-						IP:   r.leaderAddr,
-						Port: r.leaderPort,
+						c: r.leaderConn,
 					}
 				}
-				response, err := r.requestCacheServer(server.IP, server.Port, buffer[:n])
+				response, err := r.requestCacheServer(server.c, buffer[:n])
 				if err != nil {
 					conn.Write([]byte(fmt.Sprintf("Error routing to cache server: %v\n", err)))
 					continue // Continue to next request instead of closing connection
@@ -216,30 +212,25 @@ func (r *routerServer) handleConnection(conn net.Conn) {
 	}
 }
 
-func (r *routerServer) requestCacheServer(addr string, port string, payload []byte) ([]byte, error) {
-	if addr == "" || port == "" {
-		return nil, fmt.Errorf("invalid address or port for cache server (addr: '%s', port: '%s')", addr, port)
-	}
-	path := fmt.Sprintf("%s:%s", addr, port)
-	conn, err := net.Dial("tcp", path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to cache server at %s: %w", path, err)
+func (r *routerServer) requestCacheServer(conn net.Conn, payload []byte) ([]byte, error) {
+	if conn == nil {
+		return nil, fmt.Errorf("invalid connection to cache server")
 	}
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(5 * time.Second)) // Set a timeout for the operation
 
-	_, err = conn.Write(payload)
+	_, err := conn.Write(payload)
 	if err != nil {
-		return nil, fmt.Errorf("failed to send request to cache server at %s: %w", path, err)
+		return nil, fmt.Errorf("failed to send request to cache server at %s: %w", conn.RemoteAddr().String(), err)
 	}
 
-	response := make([]byte, 4096*4) // Adjust buffer
+	response := make([]byte, KB*4) // Adjust buffer
 	n, err := conn.Read(response)
 	if err != nil {
 		if err == io.EOF {
 			return response[:n], nil
 		}
-		return nil, fmt.Errorf("failed to read response from cache server at %s: %w", path, err)
+		return nil, fmt.Errorf("failed to read response from cache server at %s: %w", conn.RemoteAddr().String(), err)
 	}
 
 	return response[:n], nil
@@ -323,6 +314,7 @@ func (r *routerServer) refreshLeader() error {
 			r.Lock()
 			r.leaderAddr = ""
 			r.leaderPort = ""
+			r.leaderConn = nil // TODO: in the future we should panic here or something, this should never happen
 			r.Unlock()
 			logger.Debug("upddated leader to empty values", zap.String("addr", r.leaderAddr), zap.String("port", r.leaderPort))
 			return nil
@@ -332,6 +324,7 @@ func (r *routerServer) refreshLeader() error {
 	r.Lock()
 	r.leaderAddr = leaderInfo.IP
 	r.leaderPort = leaderInfo.Port
+	r.leaderConn = leaderInfo.c
 	r.Unlock()
 	logger.Debug("upddated leader", zap.String("addr", r.leaderAddr), zap.String("port", r.leaderPort))
 
@@ -377,10 +370,14 @@ func getLeader(zkConn *zk.Conn, leaderPath string) (*serverInfo, error) {
 	addr := parts[0]
 	port := parts[1]
 	logger.Debug("Parsed leader info", zap.String("IP", addr), zap.String("Port", port))
-
+	c, err := NewConnectionToNode(parts[0], parts[1])
+	if err != nil {
+		logger.Error("Failed to connect to leader", zap.String("child", leaderPath), zap.String("leaderAddr", leaderInfo), zap.Error(err))
+	}
 	return &serverInfo{
 		IP:   addr,
 		Port: port,
+		c:    c,
 	}, nil
 }
 func getFollowers(zkConn *zk.Conn, followerPath string) ([]serverInfo, error) {
@@ -421,9 +418,15 @@ func getFollowers(zkConn *zk.Conn, followerPath string) ([]serverInfo, error) {
 				logger.Error("Invalid follower address format", zap.String("child", child), zap.String("followerAddr", followerAddr))
 				continue
 			}
+			c, err := NewConnectionToNode(parts[0], parts[1])
+			if err != nil {
+				logger.Error("Failed to connect to follower", zap.String("child", child), zap.String("followerAddr", followerAddr), zap.Error(err))
+				continue
+			}
 			followers = append(followers, serverInfo{
 				IP:   parts[0],
 				Port: parts[1],
+				c:    c,
 			})
 			//
 		}
@@ -530,35 +533,6 @@ func main() {
 	logger.Info("Router server shutting down...")
 }
 
-func getExternalIP() (string, error) {
-	services := []string{
-		"https://api.ipify.org",
-		"https://icanhazip.com",
-		"https://ipecho.net/plain",
-		"https://myexternalip.com/raw",
-	}
-
-	for _, service := range services {
-		resp, err := http.Get(service)
-		if err != nil {
-			continue
-		}
-		defer resp.Body.Close()
-
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			continue
-		}
-
-		ip := strings.TrimSpace(string(body))
-		if net.ParseIP(ip) != nil {
-			return ip, nil
-		}
-	}
-
-	return "", fmt.Errorf("failed to get external IP from any service")
-}
-
 func handlePanics(fn func()) {
 	defer func() {
 		if err := recover(); err != nil {
@@ -602,4 +576,14 @@ func readJsonConfig(r io.Reader) configInfo {
 		panic(fmt.Errorf("error decoding JSON config: %w", err))
 	}
 	return config
+}
+
+func NewConnectionToNode(Addr string, Port string) (net.Conn, error) {
+	address := fmt.Sprintf("%s:%s", Addr, Port)
+	conn, err := net.Dial("tcp4", address)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to leader at %s: %w", address, err)
+	}
+	logger.Info("Successfully connected to node", zap.String("address", address))
+	return conn, nil
 }
