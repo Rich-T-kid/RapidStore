@@ -106,6 +106,7 @@ type Cache interface {
 	ListManager
 	SetManager
 	SortedSetManager
+	AdaptableState
 	//initStore(policy internal.EvictionPolicy, maxSize uint64)
 }
 
@@ -272,7 +273,32 @@ func (r *RapidStoreServer) ZScore(key string, member string) (float64, bool) {
 // LimitedStorage methods - route to KeyManager by default
 func (r *RapidStoreServer) CurrentSize() uint64 { return r.KeyManger.CurrentSize() }
 func (r *RapidStoreServer) Evict()              { r.KeyManger.Evict() }
-func (r *RapidStoreServer) Keys() []string      { return r.KeyManger.Keys() }
+func (r *RapidStoreServer) Keys() []string {
+	var allKeys []string
+
+	// Get keys from KeyManager (key-value store)
+	allKeys = append(allKeys, r.KeyManger.Keys()...)
+
+	// Get keys from HashManager (field store)
+	allKeys = append(allKeys, r.HashManager.Keys()...)
+
+	// Get keys from SequenceManager (list store)
+	if orderedListStore, ok := r.SequenceManager.(*OrderedListStore); ok {
+		allKeys = append(allKeys, orderedListStore.Keys()...)
+	}
+
+	// Get keys from SetManager (unique set store)
+	if uniqueSetStore, ok := r.SetM.(*UniqueSetStore); ok {
+		allKeys = append(allKeys, uniqueSetStore.Keys()...)
+	}
+
+	// Get keys from SortedSetManager (sorted set store)
+	if sortedSetStore, ok := r.SortSetM.(*SortedSetStore); ok {
+		allKeys = append(allKeys, sortedSetStore.Keys()...)
+	}
+
+	return allKeys
+}
 
 /* ---------------------- Implements the KeyInterface --------------------- */
 type keyStore struct {
