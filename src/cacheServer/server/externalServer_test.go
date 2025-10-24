@@ -12,7 +12,7 @@ import (
 func TestServerEchoPingFeatures(t *testing.T) {
 	// Initialize server
 	server := NewServer(
-		WithPort(6382), // Use different port to avoid conflicts
+		WithPort(6382),
 	)
 
 	// Start server in goroutine

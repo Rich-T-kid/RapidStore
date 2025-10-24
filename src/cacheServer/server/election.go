@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -134,6 +135,13 @@ func (s *Server) initLeader() error {
 		for _, f := range s.config.election.followerInfo {
 			globalLogger.Info("Follower", zap.String("address", f.address), zap.String("port", f.port))
 		}
+		// if your elected leader, download latest state from durable storage
+		err := s.DownloadLatestState()
+		if err != nil {
+			return err
+		}
+		// write state out to durable storage
+		go s.StoreStateLoop() // as new leader, periodically store state to durable storagex
 		go s.watchFollowers()
 		go s.attemptSyncFollowers()
 	} else {
@@ -194,10 +202,12 @@ func (s *Server) initLeader() error {
 			s.config.election.zkLeaderEvents = leaderW
 			go s.watchZoo()
 			// for now just return error but in the future need to do retrys TODO:
-			err = s.attemptSync() // grab latest updates from leader
+			globalLogger.Info("Reading from durable storage and syncing with leader")
+			err = s.RestoreAndSync(context.TODO()) // grab latest updates from leader
 			if err != nil {
 				return err
 			}
+			globalLogger.Info("Successfully read from durable storage and synced with leader")
 
 		}
 	}
@@ -266,7 +276,7 @@ func (s *Server) newElection() error {
 			globalLogger.Info("Follower", zap.String("address", f.address), zap.String("port", f.port))
 		}
 		go s.watchFollowers()
-
+		go s.StoreStateLoop() // as new leader, periodically store state to durable storagex
 	} else {
 		globalLogger.Info("I am a follower!", zap.String("leader", electedLeader), zap.String("myNode", myNodeName))
 		s.config.election.isLeader = false
@@ -492,6 +502,51 @@ func (s *Server) attemptSyncFollowers() {
 			}
 		}
 	}
+}
+
+// RestoreAndSync downloads latest snapshot and then asks leader for WAL updates.
+// ctx controls cancellation, retries/backoff is used for transient errors.
+func (s *Server) RestoreAndSync(ctx context.Context) error {
+	// Short-circuit if we're the leader (leader has latest state)
+	if s.config.election != nil && s.config.election.isLeader {
+		globalLogger.Info("Skip restore+sync because this node is leader")
+		return nil
+	}
+
+	// Retry parameters
+	maxAttempts := 5
+	baseDelay := 200 * time.Millisecond
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		// 1) Download snapshot
+		if err := s.DownloadLatestState(); err != nil {
+			lastErr = fmt.Errorf("download snapshot: %w", err)
+			globalLogger.Warn("DownloadLatestState failed; will retry", zap.Error(err), zap.Int("attempt", attempt))
+			time.Sleep(time.Duration(attempt) * baseDelay)
+			continue
+		}
+		globalLogger.Info("Downloaded latest snapshot", zap.Int64("offset", int64(s.wal.sequenceNumber)))
+		time.Sleep(40 * time.Second)
+		// 3) Request WAL deltas from leader (attemptSync should be idempotent)
+		if err := s.attemptSync(); err != nil {
+			lastErr = fmt.Errorf("attemptSync: %w", err)
+			globalLogger.Warn("attemptSync failed; will retry", zap.Error(err), zap.Int("attempt", attempt))
+			time.Sleep(time.Duration(attempt) * baseDelay)
+			continue
+		}
+
+		// success
+		globalLogger.Info("Restore and sync completed successfully")
+		return nil
+	}
+	return fmt.Errorf("RestoreAndSync failed after retries: %w", lastErr)
 }
 
 func getExternalIP() (string, error) {
