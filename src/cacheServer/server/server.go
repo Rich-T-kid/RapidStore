@@ -2,12 +2,16 @@ package server
 
 import (
 	memorystore "RapidStore/memoryStore"
+	"RapidStore/recovery"
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"sync"
 	"time"
 
@@ -277,7 +281,7 @@ func newServer(cfg *ServerConfig) *Server {
 	return s
 }
 func (s *Server) Start() error {
-	s.ramCache = memorystore.NewCache()
+	go s.watchControlC()
 	s.close = make(chan struct{})
 	list, err := net.Listen("tcp", fmt.Sprintf("%s:%d", s.config.Address, s.config.Port))
 	if err != nil {
@@ -291,6 +295,7 @@ func (s *Server) Start() error {
 		<-s.close
 		list.Close()
 	}()
+	go s.StoreStateLoop() // need to call this after s.live is set. if its not the leader it will just exit
 	for {
 		conn, err := list.Accept()
 		if err != nil {
@@ -313,11 +318,28 @@ func (s *Server) Start() error {
 	}
 }
 
+// simple func for one purpose: watch for Control-C to gracefully shutdown
+func (s *Server) watchControlC() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop() // Ensure the stop function is called to release resources.
+	<-ctx.Done()
+	s.Stop()
+
+}
+
 func (s *Server) Stop() error {
 	s.isLive = false
 	s.close <- struct{}{}
 	s.config.election.zkConn.Close()
 	globalLogger.Info("Stopping server on", zap.String("address", fmt.Sprintf("%s:%d", s.config.Address, s.config.Port)))
+	if s.config.election.isLeader {
+		err := s.SaveState()
+		if err != nil {
+			globalLogger.Error("Error saving state during shutdown", zap.Error(err))
+			return err
+		}
+	}
+	globalLogger.Warn("Server stopped successfully")
 	return nil
 }
 
@@ -363,4 +385,78 @@ func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Write(jsonResp)
+}
+func (s *Server) Serialize() ([]byte, error) {
+	content, err := s.ramCache.Serialize()
+	if err != nil {
+		return nil, err
+	}
+	var exampleState = map[string]interface{}{
+		"internal_data":   base64.StdEncoding.EncodeToString(content),
+		"lastSyncedIndex": s.wal.sequenceNumber,
+		// not definate but this seems goods
+	}
+	return json.Marshal(exampleState)
+
+}
+
+// pull latest state from external storage and load into server
+func (s *Server) DownloadLatestState() error {
+	content, err := recovery.NewExternalStorage().DownloadState(recovery.StoragePath, recovery.CredPath)
+	if err != nil {
+		return err
+	}
+	type ExternalState struct {
+		InternalData    string `json:"internal_data"`
+		LastSyncedIndex uint64 `json:"lastSyncedIndex"`
+	}
+	var externalContent ExternalState
+	if err := json.Unmarshal(content, &externalContent); err != nil {
+		return err
+	}
+	globalLogger.Info("State representaion", zap.Any("state", externalContent))
+	internalData := externalContent.InternalData
+
+	cacheData, err := base64.StdEncoding.DecodeString(internalData)
+	if err != nil {
+		globalLogger.Info("error decoding base64 body of internal_data")
+		return err
+	}
+	err = s.ramCache.Deserialize(cacheData)
+	if err != nil {
+		return err
+	}
+	s.wal.sequenceNumber = externalContent.LastSyncedIndex
+	globalLogger.Info("Successfully loaded state from external storage", zap.Uint64("lastSyncedIndex", s.wal.sequenceNumber))
+	return nil
+}
+func (s *Server) SaveState() error {
+
+	// assume leader always has the latest data so write its state out to disk
+	curContent, err := s.Serialize()
+	if err != nil {
+		globalLogger.Error("Error serializing state", zap.Error(err))
+		return err
+	}
+	globalLogger.Warn("Saving State to Storage ", zap.Any("state", string(curContent)))
+	return recovery.NewExternalStorage().SaveState(curContent, recovery.StoragePath, recovery.CredPath)
+}
+func (s *Server) StoreStateLoop() {
+	ticker := time.NewTicker(15 * time.Second) // TODO: make configurable
+	defer ticker.Stop()
+	for s.isLive && s.config.election.isLeader {
+		// only the leader should be saving state, this is always called after a new election, in the s.Start function it runs even if its not the leader
+		// but then the if check outside the loop prevents it from doing anything
+		select {
+		case <-ticker.C:
+			if err := s.SaveState(); err != nil {
+				globalLogger.Error("Error saving state", zap.Error(err))
+			} else {
+				globalLogger.Info("State saved successfully")
+			}
+		case <-s.close:
+			globalLogger.Info("Stopping state storage loop")
+			return
+		}
+	}
 }

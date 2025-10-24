@@ -12,8 +12,7 @@ import (
 func TestServerEchoPingFeatures(t *testing.T) {
 	// Initialize server
 	server := NewServer(
-		WithAddress("127.0.0.1"),
-		WithPort(6382), // Use different port to avoid conflicts
+		WithPort(6382),
 	)
 
 	// Start server in goroutine
@@ -25,7 +24,7 @@ func TestServerEchoPingFeatures(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Connect to server
-	conn, err := net.Dial("tcp", "127.0.0.1:6382")
+	conn, err := net.Dial("tcp", "0.0.0.0:6382")
 	if err != nil {
 		t.Fatalf("Failed to connect to server: %v", err)
 	}

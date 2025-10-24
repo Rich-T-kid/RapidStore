@@ -216,7 +216,6 @@ func (r *routerServer) requestCacheServer(conn net.Conn, payload []byte) ([]byte
 	if conn == nil {
 		return nil, fmt.Errorf("invalid connection to cache server")
 	}
-	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(5 * time.Second)) // Set a timeout for the operation
 
 	_, err := conn.Write(payload)

@@ -9,6 +9,7 @@ import (
 /*
  */
 func main() {
+
 	if len(os.Args) == 2 {
 		s := server.NewServerFromFile(os.Args[1])
 		fmt.Printf("server Start Status: %v\n", s.Start())
