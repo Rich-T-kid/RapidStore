@@ -29,14 +29,12 @@ A new server can restore and resume with identical data and WAL position
 
 No data loss or corruption after simulated crash and restart
 
-
-TODO: dont forget to set WAL (position/ID/byte offset) back to zero
 */
 var (
 	bucketName     = "rapid-store-bucket-storage"
 	StoragePath    = "internal_state_dump" // s3 path to store the state dump
 	CredPath       = "key.json"
-	ServerBasePath = "../key.json"
+	ServerBasePath = "key.json"
 )
 
 type ExternalStorage struct{}

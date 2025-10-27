@@ -201,9 +201,8 @@ func (s *Server) initLeader() error {
 			s.config.election.zkPredecessorEvents = predW
 			s.config.election.zkLeaderEvents = leaderW
 			go s.watchZoo()
-			// for now just return error but in the future need to do retrys TODO:
 			globalLogger.Info("Reading from durable storage and syncing with leader")
-			err = s.RestoreAndSync(context.TODO()) // grab latest updates from leader
+			err = s.RestoreAndSync(context.Background()) // grab latest updates from leader
 			if err != nil {
 				return err
 			}
@@ -244,7 +243,6 @@ func (s *Server) newElection() error {
 		return fmt.Errorf("failed to get external IP: %w", err)
 	}
 	if myNodeName == electedLeader {
-		//TODO: set up connection to followers
 		globalLogger.Info("I am the new leader!")
 		s.config.election.isLeader = true
 
@@ -336,7 +334,6 @@ func (s *Server) watchZoo() {
 		if !s.isLive || s.config.election.isLeader {
 			break
 		}
-		// TODO: if we ever want to watch the leader for what ever reason
 		select {
 		case event := <-s.config.election.zkPredecessorEvents:
 			globalLogger.Debug("Received event from predecessor", zap.String("eventType", event.Type.String()), zap.String("eventTypeRaw", fmt.Sprintf("%v", event.Type)))
@@ -570,8 +567,7 @@ func getExternalIP() (string, error) {
 
 		ip := strings.TrimSpace(string(body))
 		if net.ParseIP(ip) != nil {
-			// TODO: Update this later
-			return "0.0.0.0", nil
+			return ip, nil
 		}
 	}
 

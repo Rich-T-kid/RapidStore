@@ -37,11 +37,10 @@ const (
 
 // Metadata holds server metadata information.
 type ServerInfoMetaData struct {
-	WriteOps          uint64  `json:"write_ops"`          // total write operations
-	ReadOps           uint64  `json:"read_ops"`           // total read operations
-	ActiveConnections uint64  `json:"active_connections"` // currently open client connections
-	TotalRequests     uint64  `json:"total_requests"`     // all requests processed
-	IndepthStats      GcStats `json:"indepth_stats"`      // detailed stats about the Go runtime
+	WriteOps          uint64 `json:"write_ops"`          // total write operations
+	ReadOps           uint64 `json:"read_ops"`           // total read operations
+	ActiveConnections uint64 `json:"active_connections"` // currently open client connections
+	TotalRequests     uint64 `json:"total_requests"`     // all requests processed
 }
 type GcStats struct {
 	UptimeSeconds  uint64  `json:"uptime_seconds"` // how long server has been up
@@ -142,20 +141,22 @@ type ServerConfig struct {
 }
 
 type PersistenceConfig struct {
-	ConsistancyType    string        `json:"consistancytype" yml:"consistancy_type"`       // e.g. "Strong","quorum","eventual","minimal"
-	ReplicationTimeout time.Duration `json:"replicationtimeout" yml:"replication_timeout"` // duration for replication timeout
-	WALSyncInterval    time.Duration `json:"walsyncinterval" yml:"wal_sync_interval"`      // how often to sync WAL to disk
-	WALPath            string        `json:"walpath" yml:"wal_path"`                       // path to WAL file -> must be non-nested
-	WALMaxSize         uint64        `json:"walmaxsize" yml:"wal_max_size"`                // max size of WAL file before rotation
+	ConsistancyType      string        `json:"consistancytype" yml:"consistancy_type"`            // e.g. "Strong","quorum","eventual","minimal"
+	ReplicationTimeout   time.Duration `json:"replicationtimeout" yml:"replication_timeout"`      // duration for replication timeout
+	WALSyncInterval      time.Duration `json:"walsyncinterval" yml:"wal_sync_interval"`           // how often to sync WAL to disk
+	WALPath              string        `json:"walpath" yml:"wal_path"`                            // path to WAL file -> must be non-nested
+	WALMaxSize           uint64        `json:"walmaxsize" yml:"wal_max_size"`                     // max size of WAL file before rotation
+	ExternalSyncInterval time.Duration `json:"externalsyncinterval" yml:"external_sync_interval"` // how often to sync with external storage
 }
 
 func defaultPersistenceConfig() *PersistenceConfig {
 	return &PersistenceConfig{
-		ConsistancyType:    string(Eventual),
-		ReplicationTimeout: 2 * time.Second,
-		WALSyncInterval:    500 * time.Millisecond,
-		WALPath:            "wal.log",
-		WALMaxSize:         4096, //
+		ConsistancyType:      string(Eventual),
+		ReplicationTimeout:   2 * time.Second,
+		WALSyncInterval:      500 * time.Millisecond,
+		WALPath:              "wal.log",
+		WALMaxSize:           4096, //
+		ExternalSyncInterval: 5 * time.Minute,
 	}
 }
 

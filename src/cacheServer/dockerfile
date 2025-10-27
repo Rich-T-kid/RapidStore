@@ -1,27 +1,21 @@
-FROM golang:latest
-
+FROM golang:1.25 AS builder
 WORKDIR /app
-
 COPY . .
-RUN go mod tidy
-RUN go build -o main .
+RUN go mod tidy && go build -o main .
 
-# Expose ports for RapidStore services
-# Main server port (default)
-EXPOSE 6380
-# Health check port
-EXPOSE 8080
-# Metrics port
-EXPOSE 9090
-
+FROM debian:bookworm-slim
+WORKDIR /app
+COPY --from=builder /app/main .
+EXPOSE 6380 6381 9090
 CMD ["./main"]
 
 
-#docker buildx create --use --name RapidStore || docker buildx use Rapidbuilder-instance
-#docker buildx build --no-cache --platform linux/amd64,linux/arm64 -t rich329/rapid-instance:v0.0.3 --push .
 
-# docker pull rich329/rapid-instance:v0.0.1
-# docker run -d -p 6380:6380 -p 8080:8080 -p 9090:9090 --name rapid-instance rich329/rapid-instance:v0.0.3
+#docker buildx create --use --name RapidStore || docker buildx use Rapidbuilder-instance
+#docker buildx build --no-cache --platform linux/amd64,linux/arm64 -t rich329/rapid-instance:v0.1.3 --push .
+
+# docker pull rich329/rapid-instance:v0.1.2
+# docker run -d -p 6380:6380 -p 6381:6381 -p 9090:9090 --name rapid-instance rich329/rapid-instance:v0.1.2
 
 # docker rm -f rapid-instance
 # docker build -t rich329/rapid-instance:v0.0.1 .

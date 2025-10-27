@@ -132,6 +132,7 @@ func (r *routerServer) handleConnection(conn net.Conn) {
 			return
 		}
 		request := string(buffer[:n])
+
 		parts := strings.Split(request, " ")
 
 		switch strings.ToUpper(parts[0]) {
@@ -308,16 +309,6 @@ func (r *routerServer) randomFollower() (serverInfo, error) {
 func (r *routerServer) refreshLeader() error {
 	leaderInfo, err := getLeader(r.zooManager, leaderPath)
 	if err != nil {
-		if err == ErrNoLeader {
-			logger.Info("No leader currently elected")
-			r.Lock()
-			r.leaderAddr = ""
-			r.leaderPort = ""
-			r.leaderConn = nil // TODO: in the future we should panic here or something, this should never happen
-			r.Unlock()
-			logger.Debug("upddated leader to empty values", zap.String("addr", r.leaderAddr), zap.String("port", r.leaderPort))
-			return nil
-		}
 		return err
 	}
 	r.Lock()
@@ -519,6 +510,9 @@ func endListener(l net.Listener) func() {
 }
 
 func main() {
+	fmt.Printf("========================================================\n")
+	fmt.Printf("RapidStore Router Server Starting Up - %v\n", time.Now().Format(time.RFC1123))
+	fmt.Printf("========================================================\n")
 	if len(os.Args) > 1 {
 		r := newRouter(readConfigFile(os.Args[1]))
 		r.Start()
