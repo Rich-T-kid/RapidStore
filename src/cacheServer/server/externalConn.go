@@ -1015,6 +1015,9 @@ func syncExternal(dest []followerInfo, message []byte, consensus uint, timeout t
 		go func(node followerInfo) {
 			defer func() { done <- struct{}{} }()
 			buff := make([]byte, 256)
+			if node.c == nil {
+				return
+			}
 			if _, err := node.c.Write(message); err != nil {
 				fmt.Printf("failed to write to %s:%s %v\n", node.address, node.port, err)
 				return

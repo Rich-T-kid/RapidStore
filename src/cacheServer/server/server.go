@@ -265,12 +265,6 @@ func newServer(cfg *ServerConfig) *Server {
 		close:          make(chan struct{}),
 		isLive:         false,
 	}
-
-	if err := s.initLeader(); err != nil {
-		panic(fmt.Sprintf("error initializing leader election: %v", err))
-	}
-	connAddr := fmt.Sprintf("%s:%d", s.config.Address, s.config.Port)
-	globalLogger.Info("Server initialized", zap.String("address", connAddr))
 	return s
 }
 func (s *Server) Start() error {
@@ -280,8 +274,11 @@ func (s *Server) Start() error {
 	if err != nil {
 		return fmt.Errorf("failed to start server: %v", err)
 	}
-	connAddr := fmt.Sprintf("%s:%d", s.config.Address, s.config.Port)
-	globalLogger.Info("Starting server on", zap.String("address", connAddr))
+	// leader election init
+	if err := s.initLeader(); err != nil {
+		panic(fmt.Sprintf("error initializing leader election: %v", err))
+	}
+	globalLogger.Info("Starting server on", zap.String("address", fmt.Sprintf("%s:%d", s.config.Address, s.config.Port)))
 	// background goroutine
 	go func() {
 		<-s.close

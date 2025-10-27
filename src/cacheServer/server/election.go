@@ -184,7 +184,7 @@ func (s *Server) initLeader() error {
 			if err != nil {
 				return fmt.Errorf("failed to set up leader connection in newElection: %w", err)
 			}
-
+			globalLogger.Info("Leader INFO ", zap.String("address", lconf.Address), zap.String("port", lconf.Port))
 			s.config.election.updateLeaderInfo(lconf.Address, lconf.Port, lconf.c)
 			// watch the leader for events
 			electedLeaderPath := fmt.Sprintf("%s/%s", electionPath, electedLeader)
