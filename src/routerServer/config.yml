@@ -1,0 +1,3 @@
+port: 7000
+read_your_writes: true
+ryw_window: 5000  # 5 seconds in milliseconds

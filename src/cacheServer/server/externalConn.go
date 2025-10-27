@@ -94,7 +94,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 	globalLogger.Info("Accepted connection from", zap.String("remoteAddr", conn.RemoteAddr().String()))
 
 	// Keep reading commands until connection is closed
-	for {
+	for s.isLive {
 		buff := make([]byte, 1024)
 		n, err := conn.Read(buff)
 		if err != nil {
@@ -1065,7 +1065,7 @@ func (s *Server) startInterServerConnection() chan struct{} {
 		}
 		defer healthListener.Close()
 
-		for {
+		for s.isLive {
 			select {
 			case <-stopSignal:
 				globalLogger.Debug("Stopping InterServer connection")

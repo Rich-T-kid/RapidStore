@@ -2,7 +2,9 @@ package recovery
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"os"
 	"sync"
 
 	"cloud.google.com/go/storage"
@@ -31,9 +33,10 @@ No data loss or corruption after simulated crash and restart
 TODO: dont forget to set WAL (position/ID/byte offset) back to zero
 */
 var (
-	bucketName  = "rapid-store-bucket-storage"
-	StoragePath = "internal_state_dump" // s3 path to store the state dump
-	CredPath    = "recovery/key.json"
+	bucketName     = "rapid-store-bucket-storage"
+	StoragePath    = "internal_state_dump" // s3 path to store the state dump
+	CredPath       = "key.json"
+	ServerBasePath = "../key.json"
 )
 
 type ExternalStorage struct{}
@@ -69,12 +72,16 @@ func (es *ExternalStorage) DownloadState(path, credPath string) ([]byte, error) 
 
 	client, err := storage.NewClient(ctx, option.WithCredentialsFile(credPath))
 	if err != nil {
+		path, _ := os.Getwd()
+		fmt.Printf("Current working dir: %s\n", path)
+		fmt.Printf("Error creating storage client: %v\n", err)
 		panic(err)
 	}
 	defer client.Close()
 
 	rc, err := client.Bucket(bucketName).Object(path).NewReader(ctx)
 	if err != nil {
+		fmt.Printf("Error creating reader: %v\n", err)
 		panic(err)
 	}
 	defer rc.Close()

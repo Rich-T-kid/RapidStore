@@ -14,7 +14,8 @@ func TestServerEchoPingFeatures(t *testing.T) {
 	server := NewServer(
 		WithPort(6382),
 	)
-
+	server.Stop()
+	//
 	// Start server in goroutine
 	go func() {
 		server.Start()

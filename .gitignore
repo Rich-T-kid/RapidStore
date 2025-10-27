@@ -1,3 +1,4 @@
 **/*.log
 **/*.env
-/src/cacheServer/recovery/key.json
+/src/cacheServer/key.json
+.vscode/launch.json

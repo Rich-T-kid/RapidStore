@@ -296,7 +296,7 @@ func (s *Server) Start() error {
 		list.Close()
 	}()
 	go s.StoreStateLoop() // need to call this after s.live is set. if its not the leader it will just exit
-	for {
+	for s.isLive {
 		conn, err := list.Accept()
 		if err != nil {
 			select {
@@ -316,6 +316,7 @@ func (s *Server) Start() error {
 		s.productionStats.IncrementActiveConnections()
 		go s.handleConnection(conn)
 	}
+	return nil
 }
 
 // simple func for one purpose: watch for Control-C to gracefully shutdown
@@ -402,7 +403,7 @@ func (s *Server) Serialize() ([]byte, error) {
 
 // pull latest state from external storage and load into server
 func (s *Server) DownloadLatestState() error {
-	content, err := recovery.NewExternalStorage().DownloadState(recovery.StoragePath, recovery.CredPath)
+	content, err := recovery.NewExternalStorage().DownloadState(recovery.StoragePath, recovery.ServerBasePath)
 	if err != nil {
 		return err
 	}
@@ -439,7 +440,7 @@ func (s *Server) SaveState() error {
 		return err
 	}
 	globalLogger.Warn("Saving State to Storage ", zap.Any("state", string(curContent)))
-	return recovery.NewExternalStorage().SaveState(curContent, recovery.StoragePath, recovery.CredPath)
+	return recovery.NewExternalStorage().SaveState(curContent, recovery.StoragePath, recovery.ServerBasePath)
 }
 func (s *Server) StoreStateLoop() {
 	ticker := time.NewTicker(15 * time.Second) // TODO: make configurable

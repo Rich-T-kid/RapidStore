@@ -533,7 +533,6 @@ func (s *Server) RestoreAndSync(ctx context.Context) error {
 			continue
 		}
 		globalLogger.Info("Downloaded latest snapshot", zap.Int64("offset", int64(s.wal.sequenceNumber)))
-		time.Sleep(40 * time.Second)
 		// 3) Request WAL deltas from leader (attemptSync should be idempotent)
 		if err := s.attemptSync(); err != nil {
 			lastErr = fmt.Errorf("attemptSync: %w", err)
