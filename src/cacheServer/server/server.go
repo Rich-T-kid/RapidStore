@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -212,15 +211,14 @@ func WithElectionTimeout(timeout time.Duration) serverOption {
 }
 func defaultServerConfig() *ServerConfig {
 	return &ServerConfig{
-		Address:         "0.0.0.0",
-		Port:            6380,
-		HealthCheckPort: 8080,
-		MaxClients:      1000,
-		timeout:         0,
-		idleTimeout:     20 * time.Second,
-		persistence:     defaultPersistenceConfig(),
-		monitoring:      defaultMonitoringConfig(),
-		election:        defaultElectionConfig(),
+		Address:     "0.0.0.0",
+		Port:        6380,
+		MaxClients:  1000,
+		timeout:     0,
+		idleTimeout: 20 * time.Second,
+		persistence: defaultPersistenceConfig(),
+		monitoring:  defaultMonitoringConfig(),
+		election:    defaultElectionConfig(),
 	}
 }
 
@@ -230,7 +228,6 @@ type Server struct {
 	dynamicMessage  chan internalServerMSg
 	// other fields like listener, handlers, etc.
 	ramCache memorystore.Cache
-	mu       sync.RWMutex
 	wal      *WriteAheadLog
 	close    chan struct{}
 	isLive   bool
@@ -268,16 +265,6 @@ func newServer(cfg *ServerConfig) *Server {
 		close:          make(chan struct{}),
 		isLive:         false,
 	}
-
-	if err := s.initLeader(); err != nil {
-		panic(fmt.Sprintf("error initializing leader election: %v", err))
-	}
-	// start early to avoid missing messages
-	go s.interServerCommunications()
-	go s.exportStats()
-
-	connAddr := fmt.Sprintf("%s:%d", s.config.Address, s.config.Port)
-	globalLogger.Info("Server initialized", zap.String("address", connAddr))
 	return s
 }
 func (s *Server) Start() error {
@@ -287,16 +274,21 @@ func (s *Server) Start() error {
 	if err != nil {
 		return fmt.Errorf("failed to start server: %v", err)
 	}
-	connAddr := fmt.Sprintf("%s:%d", s.config.Address, s.config.Port)
-	globalLogger.Info("Starting server on", zap.String("address", connAddr))
+	// leader election init
+	if err := s.initLeader(); err != nil {
+		panic(fmt.Sprintf("error initializing leader election: %v", err))
+	}
+	globalLogger.Info("Starting server on", zap.String("address", fmt.Sprintf("%s:%d", s.config.Address, s.config.Port)))
 	// background goroutine
 	go func() {
-		s.isLive = true
 		<-s.close
 		list.Close()
 	}()
+	s.isLive = true
 	go s.StoreStateLoop() // need to call this after s.live is set. if its not the leader it will just exit
-	for {
+	go s.exportStats()
+	go s.interServerCommunications()
+	for s.isLive {
 		conn, err := list.Accept()
 		if err != nil {
 			select {
@@ -315,7 +307,9 @@ func (s *Server) Start() error {
 		}
 		s.productionStats.IncrementActiveConnections()
 		go s.handleConnection(conn)
+		s.productionStats.DecrementActiveConnections()
 	}
+	return nil
 }
 
 // simple func for one purpose: watch for Control-C to gracefully shutdown
@@ -344,27 +338,16 @@ func (s *Server) Stop() error {
 }
 
 func (s *Server) exportStats() {
-	// Create a new ServeMux for this server instance to avoid conflicts
-	// application code wise this is unimportant but test are strcutred poorly right now, easiest fix
 	mux := http.NewServeMux()
 	mux.HandleFunc(s.config.monitoring.MetricsPath, s.metrics)
-
-	go func() {
-		var alreadyTried = false
-		for s.isLive {
-			endpoint := fmt.Sprintf(":%d", s.config.monitoring.MetricsPort)
-			globalLogger.Info("Starting metrics server on", zap.String("endpoint", endpoint))
-			if err := http.ListenAndServe(endpoint, mux); err != nil {
-				globalLogger.Warn("Error starting metrics server", zap.Error(err))
-			}
-			time.Sleep(s.config.timeout) // Retry after a delay if it fails
-			if alreadyTried {
-				globalLogger.Debug("Metrics server failed to start after retry, giving up")
-				break // Avoid infinite retry loop
-			}
-			alreadyTried = true
+	for s.isLive {
+		endpoint := fmt.Sprintf(":%d", s.config.monitoring.MetricsPort)
+		fmt.Printf("Endpoint is %s\n", endpoint)
+		globalLogger.Info("Starting metrics server on", zap.String("endpoint", endpoint))
+		if err := http.ListenAndServe(endpoint, mux); err != nil {
+			globalLogger.Warn("Error starting metrics server", zap.Error(err))
 		}
-	}()
+	}
 }
 func (s *Server) metrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Content-Type", "application/json")
@@ -402,7 +385,7 @@ func (s *Server) Serialize() ([]byte, error) {
 
 // pull latest state from external storage and load into server
 func (s *Server) DownloadLatestState() error {
-	content, err := recovery.NewExternalStorage().DownloadState(recovery.StoragePath, recovery.CredPath)
+	content, err := recovery.NewExternalStorage().DownloadState(recovery.StoragePath, recovery.ServerBasePath)
 	if err != nil {
 		return err
 	}
@@ -439,10 +422,10 @@ func (s *Server) SaveState() error {
 		return err
 	}
 	globalLogger.Warn("Saving State to Storage ", zap.Any("state", string(curContent)))
-	return recovery.NewExternalStorage().SaveState(curContent, recovery.StoragePath, recovery.CredPath)
+	return recovery.NewExternalStorage().SaveState(curContent, recovery.StoragePath, recovery.ServerBasePath)
 }
 func (s *Server) StoreStateLoop() {
-	ticker := time.NewTicker(15 * time.Second) // TODO: make configurable
+	ticker := time.NewTicker(s.config.persistence.ExternalSyncInterval)
 	defer ticker.Stop()
 	for s.isLive && s.config.election.isLeader {
 		// only the leader should be saving state, this is always called after a new election, in the s.Start function it runs even if its not the leader

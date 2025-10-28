@@ -24,7 +24,6 @@ var (
 
 type baseCommands string
 
-// TODO split this into cmd and Inter server cmd
 const (
 	// server commands
 	ServerPrefix baseCommands = "SS" // RapidStore command prefix
@@ -74,18 +73,35 @@ const (
 	Zrank    baseCommands = "ZRANK"
 	Zrevrank baseCommands = "ZREVRANK"
 	Zscore   baseCommands = "ZSCORE"
-)
-const (
-	// Change to exist/not found TODO:
+	// Response messages
 	Successfull = "Successfull"
 	Failed      = "Failed"
 )
 
 var (
-	// Define a set of valid commands for quick lookup
-	validCommands = newValidCMD()
+	validCommands   = newValidCMD()
+	writeOperations = map[string]bool{
+		"SET":     true,
+		"DEL":     true,
+		"EXPIRE":  true,
+		"INCR":    true,
+		"DECR":    true,
+		"APPEND":  true,
+		"MSET":    true,
+		"HSET":    true,
+		"HDEL":    true,
+		"LPUSH":   true,
+		"RPUSH":   true,
+		"LPOP":    true,
+		"RPOP":    true,
+		"SADD":    true,
+		"SREM":    true,
+		"ZADD":    true,
+		"ZREMOVE": true,
+	}
 )
 
+// TODO: INCR and DESC for read an wwrite commands for metrics. and incrmeent total reqeust as well
 // Handle individual client connection
 func (s *Server) handleConnection(conn net.Conn) {
 	defer conn.Close()
@@ -94,17 +110,20 @@ func (s *Server) handleConnection(conn net.Conn) {
 	globalLogger.Info("Accepted connection from", zap.String("remoteAddr", conn.RemoteAddr().String()))
 
 	// Keep reading commands until connection is closed
-	for {
+	for s.isLive {
 		buff := make([]byte, 1024)
 		n, err := conn.Read(buff)
 		if err != nil {
+			if err == io.EOF {
+				globalLogger.Info("Client has closed the connection", zap.String("remoteAddr", conn.RemoteAddr().String()))
+				return
+			}
 			globalLogger.Warn("(cache Server) Connection closed or error reading", zap.Error(err))
 			return
 		}
-		//TODO: space in command can cause errors. fix this
 		parts := strings.Split(strings.TrimSpace(string(buff[:n])), " ")
 		base := parts[0]
-
+		s.productionStats.IncrementTotalRequests()
 		switch strings.ToUpper(base) {
 		case string(SET):
 			globalLogger.Info("SET command received", zap.String("command", string(buff[:n])))
@@ -114,8 +133,6 @@ func (s *Server) handleConnection(conn net.Conn) {
 				continue
 			}
 			key := parts[1]
-			// TODO: need to parse this as the actuall type. right now its just a string
-			// reflection?
 			value := trueType(parts[2])
 			// check if ttl is provided
 			// if not provided set default value
@@ -179,7 +196,6 @@ func (s *Server) handleConnection(conn net.Conn) {
 			} else {
 				conn.Write([]byte(Failed + "\n"))
 			}
-		// ToDO update this so that internally handles time.Time for expireation due to latency
 		case string(Expire):
 			globalLogger.Info("EXPIRE command received", zap.String("command", string(buff[:n])))
 			if len(parts) != 3 {
@@ -326,7 +342,6 @@ func (s *Server) handleConnection(conn net.Conn) {
 			}
 		case string(Mset):
 			globalLogger.Info("MSET command received", zap.String("command", string(buff[:n])))
-			//TODO: this is a bit more complicated since its a varadic function
 			toMap := decodePairs(parts[1:])
 			content := NewMset(toMap)
 			if err := s.wal.Append(content); err != nil {
@@ -349,7 +364,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 			}
 			key := parts[1]
 			field := parts[2]
-			value := trueType(parts[3]) // same issue as before, need to get the real data type here for now its fine TODO:
+			value := trueType(parts[3])
 
 			var ttl = neverExpireIntRepresentation
 			if len(parts) >= 5 {
@@ -782,7 +797,11 @@ func (s *Server) handleConnection(conn net.Conn) {
 			conn.Write([]byte("Error: Unknown command\n"))
 			continue
 		}
-
+		if writeOperations[base] {
+			s.productionStats.IncrementWriteOps()
+		} else {
+			s.productionStats.IncrementReadOps()
+		}
 	}
 }
 
@@ -873,7 +892,7 @@ func (s *Server) updateState(entry entryLog) error {
 		}
 		key := parts[1]
 		field := parts[2]
-		value := trueType(parts[3]) // TODO: need to parse the actual type here
+		value := trueType(parts[3])
 		var seconds int
 		_, err := fmt.Sscanf(parts[4], "%d", &seconds)
 		if err != nil {
@@ -896,7 +915,7 @@ func (s *Server) updateState(entry entryLog) error {
 			return fmt.Errorf("invalid LPUSH entry format: %s, correct format %s", string(entry), validCommands.LPush)
 		}
 		key := parts[1]
-		value := parts[2] // TODO: need to parse the actual type here
+		value := parts[2]
 		s.ramCache.LPush(key, value)
 	case string(RPush):
 		if len(parts) < 3 {
@@ -904,7 +923,7 @@ func (s *Server) updateState(entry entryLog) error {
 		}
 
 		key := parts[1]
-		value := parts[2] // TODO: need to parse the actual type here
+		value := parts[2]
 		s.ramCache.RPush(key, value)
 	case string(LPop):
 		if len(parts) != 2 {
@@ -924,14 +943,14 @@ func (s *Server) updateState(entry entryLog) error {
 			return fmt.Errorf("invalid SADD entry format: %s, correct format %s", string(entry), validCommands.SAdd)
 		}
 		key := parts[1]
-		member := parts[2] // TODO: need to parse the actual type here
+		member := parts[2]
 		s.ramCache.SAdd(key, member)
 	case string(SRem):
 		if len(parts) < 3 {
 			return fmt.Errorf("invalid SREM entry format: %s, correct format %s", string(entry), validCommands.SRem)
 		}
 		key := parts[1]
-		member := parts[2] // TODO: need to parse the actual type here
+		member := parts[2]
 		s.ramCache.SRem(key, member)
 	case string(ZAdd):
 		if len(parts) < 4 {
@@ -996,6 +1015,9 @@ func syncExternal(dest []followerInfo, message []byte, consensus uint, timeout t
 		go func(node followerInfo) {
 			defer func() { done <- struct{}{} }()
 			buff := make([]byte, 256)
+			if node.c == nil {
+				return
+			}
 			if _, err := node.c.Write(message); err != nil {
 				fmt.Printf("failed to write to %s:%s %v\n", node.address, node.port, err)
 				return
@@ -1053,7 +1075,7 @@ func (s *Server) startInterServerConnection() chan struct{} {
 
 	go func() {
 
-		bindAddr := "0.0.0.0"
+		bindAddr := "0.0.0.0" // catch all interfaces
 
 		addr := fmt.Sprintf("%s:%d", bindAddr, s.config.Port+1)
 		globalLogger.Info("Inter Server communications is @ ", zap.String("address", addr))
@@ -1065,7 +1087,7 @@ func (s *Server) startInterServerConnection() chan struct{} {
 		}
 		defer healthListener.Close()
 
-		for {
+		for s.isLive {
 			select {
 			case <-stopSignal:
 				globalLogger.Debug("Stopping InterServer connection")
@@ -1296,7 +1318,7 @@ func decodePairs(pairs []string) map[string]any {
 			continue
 		}
 		key := pieces[0]
-		value := pieces[1] // TODO: need to parse the actual type here
+		value := pieces[1]
 		toMap[key] = value
 	}
 	return toMap

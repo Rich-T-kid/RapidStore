@@ -34,8 +34,6 @@ var (
 // entryLog represents a single log entry in the WAL
 type entryLog []byte
 
-// TODO: graceful shutdown, use a chan
-
 // entrys are size|data
 // size is uint16
 // data is []byte of size
@@ -149,7 +147,6 @@ func (wal *WriteAheadLog) Append(entry entryLog) error {
 	if err := binary.Write(wal.buffer, binary.BigEndian, checkSum); err != nil {
 		return fmt.Errorf("failed to write checksum: %v", err)
 	}
-	//TODO: increment sequence number by the size of the entire entry
 	atomic.AddUint64(&wal.sequenceNumber, uint64(newEntrySize))
 	return nil
 
@@ -176,7 +173,6 @@ type walEntry struct {
 	Checksum    uint32
 }
 
-// todo: update so its the same buffer
 func (wal *WriteAheadLog) ReadWal(r io.Reader) <-chan walEntry {
 	result := make(chan walEntry)
 

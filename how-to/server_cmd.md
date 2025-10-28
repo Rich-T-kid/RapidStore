@@ -10,6 +10,14 @@
 ```bash
 printf "hello" | nc Addr Port
 ```
+### Interactive shell session
+#### allows you to use multiple commands in a single session without sending EOF
+```bash 
+nc Addr Por (nc localhost 6380)
+SS Ping
+SS ECHO
+Set richard 25
+```
 **Expected Response:** `Echo: hello`
 
 ### Ping Command
